@@ -9,9 +9,9 @@ import {
   MAX_QUOTE_DOC_BYTES,
   METHOD_KINDS,
   GST_RATES,
-} from './quoteExtraction';
-import { extractInvoiceFields, normaliseInvoice, INVOICE_KINDS } from './invoiceExtraction';
-import { parseCreditDays } from './src/lib/vendorComparison';
+} from './quoteExtraction.js';
+import { extractInvoiceFields, normaliseInvoice, INVOICE_KINDS } from './invoiceExtraction.js';
+import { parseCreditDays } from './src/lib/vendorComparison.js';
 import {
   renderPurchaseOrderPdf,
   amountInWords,
@@ -19,8 +19,8 @@ import {
   stateCodeOf,
   formatINR,
   GST_STATES,
-} from './purchaseOrder';
-import type { PurchaseOrderData, PurchaseOrderLine } from './purchaseOrder';
+} from './purchaseOrder.js';
+import type { PurchaseOrderData, PurchaseOrderLine } from './purchaseOrder.js';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 import {
@@ -30,7 +30,7 @@ import {
   renderEmailHtml,
   renderEmailText,
   safeUrl,
-} from './emailTemplate';
+} from './emailTemplate.js';
 import { Resend } from 'resend';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { MongoClient } from 'mongodb';
@@ -223,9 +223,16 @@ function getMongoDb(): Promise<Db> {
   return mongoDbPromise;
 }
 
-async function startServer() {
+interface AppOptions {
+  /** Serve the React app (Vite in dev, dist/ in production). Off on Vercel, which serves dist/ itself. */
+  serveFrontend?: boolean;
+  /** Run background timers (payment reminders). Off on Vercel, where a cron job calls the endpoint instead. */
+  scheduleJobs?: boolean;
+}
+
+/** Builds the Express app with every API route. Used by the standalone server and by the Vercel function. */
+export async function createApp({ serveFrontend = true, scheduleJobs = true }: AppOptions = {}) {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
 
   app.disable('x-powered-by');
   if (isProduction) app.set('trust proxy', 1);
@@ -1506,10 +1513,27 @@ async function startServer() {
     }
   }
 
-  // Check for due invoices shortly after start-up, then every hour
-  const reminderEveryMs = Math.max(5, Number(process.env.REMINDER_INTERVAL_MINUTES) || 60) * 60000;
-  setTimeout(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), 15000).unref();
-  setInterval(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), reminderEveryMs).unref();
+  // Check for due invoices shortly after start-up, then every hour (long-running server only)
+  if (scheduleJobs) {
+    const reminderEveryMs = Math.max(5, Number(process.env.REMINDER_INTERVAL_MINUTES) || 60) * 60000;
+    setTimeout(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), 15000).unref();
+    setInterval(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), reminderEveryMs).unref();
+  }
+
+  // Scheduled run for serverless hosting (Vercel Cron calls this; see vercel.json).
+  // Vercel sends "Authorization: Bearer <CRON_SECRET>" when CRON_SECRET is set in the project.
+  app.get('/api/cron/payment-reminders', async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    const auth = String(req.headers.authorization || '');
+    const allowed = secret ? auth === `Bearer ${secret}` : String(req.headers['user-agent'] || '').startsWith('vercel-cron');
+    if (!allowed) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    try {
+      await runPaymentReminders();
+      return res.json({ success: true });
+    } catch (err) {
+      return sendError(res, err, 'Payment reminder check failed.');
+    }
+  });
 
   /* ---------------- In-app notifications ---------------- */
 
@@ -2539,7 +2563,9 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
     res.status(404).json({ success: false, error: 'Not found' });
   });
 
-  if (!isProduction) {
+  if (!serveFrontend) {
+    // API only (Vercel serves the built frontend from dist/)
+  } else if (!isProduction) {
     // Vite middleware for development (loaded lazily so production never needs it)
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2565,6 +2591,14 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
     });
   }
 
+  return app;
+}
+
+/** Long-running server (local development, Docker, `npm start`). */
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
+  const app = await createApp({ serveFrontend: true, scheduleJobs: true });
+
   // Warm up the database connection without blocking startup
   getMongoDb().catch((err) => console.warn('[MongoDB] Initial connection failed (will retry on demand):', err?.message || err));
 
@@ -2584,7 +2618,10 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// On Vercel the app is imported by api/index.ts instead of listening on a port
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

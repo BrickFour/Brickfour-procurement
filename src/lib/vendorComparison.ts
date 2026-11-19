@@ -1,4 +1,4 @@
-import { Vendor, VendorQuotation, MarketPriceBenchmark, ProjectRequirement } from '../types';
+import type { Vendor, VendorQuotation, MarketPriceBenchmark, ProjectRequirement } from '../types';
 
 /**
  * Maps approved vendors by Material Code

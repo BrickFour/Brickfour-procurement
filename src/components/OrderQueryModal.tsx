@@ -202,6 +202,22 @@ export default function OrderQueryModal({
     }
   }, [material, marketBenchmarks]);
 
+  // Keep the selected material in step with the dropdown: when the form is opened without a material
+  // (or the project changes), select the first material of the chosen site instead of leaving it blank.
+  useEffect(() => {
+    if (!isOpen) return;
+    const inProject = materials.filter((m) => !selectedProjectId || m.projectId === selectedProjectId);
+    if (inProject.length && !inProject.some((m) => m.id === selectedMatId)) {
+      const first = inProject[0];
+      setSelectedMatId(first.id);
+      setUnit(first.unit);
+      const deficit = Math.max(first.minThreshold * 2 - first.currentStock, first.minThreshold);
+      setQuantity(deficit > 0 ? deficit : 100);
+      const mkt = getMarketBenchmark(resolveMaterialCode(first), marketBenchmarks);
+      setTargetBudgetRate(first.unitCost || mkt?.currentMarketPrice || 380);
+    }
+  }, [isOpen, selectedProjectId, materials]);
+
   // Update delivery address when project changes
   useEffect(() => {
     const proj = projects.find((p) => p.id === selectedProjectId);
@@ -472,51 +488,52 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden text-slate-900">
+      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden text-slate-900">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-linear-to-r from-amber-500/10 via-amber-50 to-orange-50/50">
+        <div className="flex items-center justify-between gap-3 px-5 sm:px-6 py-4 bg-[#23408e] text-white">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center font-black shadow-xs">
+            <div className="w-10 h-10 rounded-lg bg-white/15 text-white flex items-center justify-center shrink-0">
               <ShoppingCart size={20} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base sm:text-lg font-black text-slate-900">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base sm:text-lg font-bold text-white">
                   Raise Project Requirement (PR) & Order Query
                 </h3>
-                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[11px] font-black tracking-wider uppercase border border-amber-300">
+                <span className="px-2 py-0.5 rounded-full bg-white/15 text-white text-[11px] font-semibold border border-white/20">
                   RFQ Workflow
                 </span>
               </div>
-              <p className="text-xs text-slate-600 font-medium">
+              <p className="text-xs text-blue-100">
                 Identify material code, map eligible vendors, check market prices, and dispatch quotation enquiries.
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+            aria-label="Close"
+            className="p-2 text-blue-100 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
           >
             <X size={20} />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5 bg-slate-50 scrollbar-thin">
           {successToast && (
-            <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-2xl flex items-center gap-2.5 text-emerald-950 text-xs font-bold animate-in fade-in">
+            <div role="status" className="px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2.5 text-emerald-900 text-sm animate-in fade-in">
               <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
               <span>{successToast}</span>
             </div>
           )}
 
           {/* SECTION 1: Material Identification & Project Site */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
-              <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                <FileText size={14} className="text-amber-500" /> 1. Material Identification & Site Mapping
+          <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <FileText size={14} className="text-[#23408e]" /> 1. Material Identification & Site Mapping
               </span>
-              <span className="text-[11px] font-extrabold px-2 py-0.5 bg-slate-900 text-amber-400 rounded-md">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold font-mono bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
                 Material Code: #{matCode}
               </span>
             </div>
@@ -524,13 +541,13 @@ Contact Email: ganeshnagargoje1008@gmail.com
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Site / Project Selection */}
               <div>
-                <label className="block text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1">
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5 flex items-center gap-1">
                   <Building2 size={13} className="text-slate-400" /> Target Project Site *
                 </label>
                 <select
                   value={selectedProjectId}
                   onChange={(e) => setSelectedProjectId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                   required
                 >
                   {projects.map((p) => (
@@ -543,8 +560,8 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
               {/* Material Selection */}
               <div>
-                <label className="block text-xs font-extrabold text-slate-700 mb-1.5 flex items-center gap-1">
-                  <Sparkles size={13} className="text-amber-500" /> Select Construction Resource *
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5 flex items-center gap-1">
+                  <Sparkles size={13} className="text-[#23408e]" /> Select Construction Resource *
                 </label>
                 <select
                   value={selectedMatId}
@@ -559,7 +576,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                       setTargetBudgetRate(mat.unitCost || mkt?.currentMarketPrice || 380);
                     }
                   }}
-                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                   required
                 >
                   {materials
@@ -576,27 +593,27 @@ Contact Email: ganeshnagargoje1008@gmail.com
             {/* Live Inventory Snapshot Card */}
             {activeMaterial && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
-                <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">Current Stock</span>
-                  <p className="text-xs sm:text-sm font-black text-slate-900">
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 min-w-0">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Current Stock</span>
+                  <p className="text-sm font-semibold text-slate-900">
                     {activeMaterial.currentStock} {activeMaterial.unit}
                   </p>
                 </div>
-                <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">2x Safe Level</span>
-                  <p className="text-xs sm:text-sm font-black text-slate-900">
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 min-w-0">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">2x Safe Level</span>
+                  <p className="text-sm font-semibold text-slate-900">
                     {activeMaterial.minThreshold * 2} {activeMaterial.unit}
                   </p>
                 </div>
-                <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">Last Recorded Cost</span>
-                  <p className="text-xs sm:text-sm font-black text-slate-900">
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 min-w-0">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Last Recorded Cost</span>
+                  <p className="text-sm font-semibold text-slate-900">
                     Rs. {activeMaterial.unitCost.toLocaleString('en-IN')} / {activeMaterial.unit}
                   </p>
                 </div>
-                <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">Material Group</span>
-                  <p className="text-xs sm:text-sm font-black text-amber-700 truncate" title={matGroup}>
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 min-w-0">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Material Group</span>
+                  <p className="text-sm font-semibold text-[#23408e] truncate" title={matGroup}>
                     {matGroup}
                   </p>
                 </div>
@@ -606,15 +623,15 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
           {/* SECTION 2: Requirement Parameters & Market Benchmark */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-4">
-              <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 border-b border-slate-200 pb-2">
-                <Calendar size={14} className="text-amber-500" /> 2. Quantity & Delivery Timelines
+            <div className="lg:col-span-2 bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+              <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5 border-b border-slate-100 pb-2.5">
+                <Calendar size={14} className="text-[#23408e]" /> 2. Quantity & Delivery Timelines
               </span>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {/* Required Quantity */}
                 <div>
-                  <label className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
                     Required Quantity *
                   </label>
                   <div className="flex">
@@ -624,10 +641,10 @@ Contact Email: ganeshnagargoje1008@gmail.com
                       step="any"
                       value={quantity}
                       onChange={(e) => setQuantity(e.target.value === '' ? '' : Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-l-xl text-xs font-black text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-l-lg text-sm font-semibold text-slate-900 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                       required
                     />
-                    <span className="px-3 py-2 bg-slate-200 text-slate-700 text-xs font-bold rounded-r-xl border-y border-r border-slate-300">
+                    <span className="px-3 py-2 bg-slate-100 text-slate-600 text-xs font-semibold rounded-r-lg border-y border-r border-slate-300 whitespace-nowrap">
                       {unit}
                     </span>
                   </div>
@@ -635,7 +652,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
                 {/* Target Budget Rate */}
                 <div>
-                  <label className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
                     Target Rate (Rs./unit)
                   </label>
                   <input
@@ -644,21 +661,21 @@ Contact Email: ganeshnagargoje1008@gmail.com
                     step="any"
                     value={targetBudgetRate}
                     onChange={(e) => setTargetBudgetRate(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                     placeholder="e.g. 385"
                   />
                 </div>
 
                 {/* Target Date */}
                 <div>
-                  <label className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
                     Required Delivery Date *
                   </label>
                   <input
                     type="date"
                     value={requiredDate}
                     onChange={(e) => setRequiredDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                     required
                   />
                 </div>
@@ -666,7 +683,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
               {/* Urgency */}
               <div>
-                <label className="block text-xs font-extrabold text-slate-700 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
                   Procurement Urgency Level
                 </label>
                 <div className="grid grid-cols-3 gap-2">
@@ -675,14 +692,14 @@ Contact Email: ganeshnagargoje1008@gmail.com
                       key={u}
                       type="button"
                       onClick={() => setUrgency(u)}
-                      className={`px-3 py-2 rounded-xl text-xs font-extrabold cursor-pointer border transition-all ${
+                      className={`px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer border transition-colors ${
                         urgency === u
                           ? u === 'Immediate'
-                            ? 'bg-red-600 text-white border-red-700 shadow-xs'
+                            ? 'bg-rose-600 text-white border-rose-600'
                             : u === 'High'
-                            ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-xs'
-                            : 'bg-slate-900 text-white border-slate-950 shadow-xs'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                            ? 'bg-amber-500 text-white border-amber-500'
+                            : 'bg-[#23408e] text-white border-[#23408e]'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                       }`}
                     >
                       {u}
@@ -693,14 +710,14 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
               {/* Technical Specifications */}
               <div>
-                <label className="block text-xs font-extrabold text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-600 mb-1">
                   Required Technical Grade & Quality Specifications
                 </label>
                 <textarea
                   rows={2}
                   value={specifications}
                   onChange={(e) => setSpecifications(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 font-medium focus:outline-hidden focus:ring-2 focus:ring-amber-500 resize-y"
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20 resize-y"
                   placeholder="Specify IS grade, packaging requirements, test certificate conditions..."
                   required
                 />
@@ -708,14 +725,14 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
               {/* Delivery Address */}
               <div>
-                <label className="block text-xs font-extrabold text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-600 mb-1">
                   Site Delivery Address & Gates
                 </label>
                 <input
                   type="text"
                   value={deliveryAddress}
                   onChange={(e) => setDeliveryAddress(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 font-medium focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                   required
                 />
               </div>
@@ -723,7 +740,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
               {/* Receiving hours, unloading constraints & quotation deadline (shown to vendors) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label htmlFor="pr-receiving-hours" className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label htmlFor="pr-receiving-hours" className="block text-xs font-semibold text-slate-600 mb-1">
                     Receiving Hours
                   </label>
                   <input
@@ -732,11 +749,11 @@ Contact Email: ganeshnagargoje1008@gmail.com
                     value={receivingHours}
                     onChange={(e) => setReceivingHours(e.target.value)}
                     placeholder="e.g. 08:00-19:00, Mon-Sat"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 font-medium focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                   />
                 </div>
                 <div>
-                  <label htmlFor="pr-unloading" className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label htmlFor="pr-unloading" className="block text-xs font-semibold text-slate-600 mb-1">
                     Unloading Constraints
                   </label>
                   <input
@@ -745,11 +762,11 @@ Contact Email: ganeshnagargoje1008@gmail.com
                     value={unloadingConstraints}
                     onChange={(e) => setUnloadingConstraints(e.target.value)}
                     placeholder="e.g. Max 10-wheeler; no entry 22:00-06:00"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 font-medium focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                   />
                 </div>
                 <div>
-                  <label htmlFor="pr-quote-deadline" className="block text-xs font-extrabold text-slate-700 mb-1">
+                  <label htmlFor="pr-quote-deadline" className="block text-xs font-semibold text-slate-600 mb-1">
                     Quotation Deadline *
                   </label>
                   <input
@@ -757,7 +774,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                     type="datetime-local"
                     value={quoteDeadline}
                     onChange={(e) => setQuoteDeadline(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 font-medium focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-hidden focus:border-[#23408e] focus:ring-2 focus:ring-[#23408e]/20"
                     required
                   />
                 </div>
@@ -775,25 +792,25 @@ Contact Email: ganeshnagargoje1008@gmail.com
               }
 
               return (
-                <div className="bg-linear-to-b from-amber-50 to-orange-50 p-4 rounded-2xl border border-amber-200 flex flex-col justify-between space-y-3">
+                <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between space-y-3">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-black text-amber-950 uppercase tracking-wider flex items-center gap-1.5">
-                        <TrendingUp size={14} className="text-amber-700" /> Market Benchmark
+                      <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                        <TrendingUp size={15} className="text-[#23408e]" /> Market Benchmark
                       </span>
 
                       {isLoadingOnline ? (
-                        <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-100 text-blue-900 border border-blue-200 rounded-full flex items-center gap-1 animate-pulse shadow-2xs">
-                          <RotateCw size={10} className="animate-spin text-blue-700" /> Searching Online...
+                        <span className="text-[11px] font-semibold px-2 py-0.5 bg-[#eaf0fb] text-[#23408e] border border-[#c9d6f2] rounded-full flex items-center gap-1">
+                          <RotateCw size={11} className="animate-spin" /> Searching Online...
                         </span>
                       ) : (
                         <button
                           type="button"
                           onClick={() => fetchOnlineMarketBenchmark(true)}
                           title="Click to search latest live market price online via Gemini"
-                          className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border border-emerald-300 rounded-full flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                          className="text-[11px] font-semibold px-2 py-0.5 bg-white hover:bg-[#f5f8fd] text-[#23408e] border border-[#c9d6f2] rounded-full flex items-center gap-1 transition-colors cursor-pointer"
                         >
-                          <Globe size={10} className="text-emerald-700" /> Live Search • Refresh
+                          <Globe size={11} /> Refresh price
                         </button>
                       )}
                     </div>
@@ -802,7 +819,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                       <div className="space-y-3">
                         <div>
                           <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-amber-800 uppercase">
+                            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
                               National Market Price
                             </span>
                             {displayBenchmark.fetchedAt && (
@@ -812,7 +829,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                             )}
                           </div>
 
-                          <p className="text-2xl font-black text-slate-950">
+                          <p className="text-2xl font-bold text-slate-900">
                             Rs. {displayBenchmark.currentMarketPrice.toLocaleString('en-IN')}{' '}
                             <span className="text-xs font-bold text-slate-600">/ {displayBenchmark.unit}</span>
                           </p>
@@ -821,17 +838,17 @@ Contact Email: ganeshnagargoje1008@gmail.com
                           {lastBuyCost > 0 ? (
                             <div className="mt-1.5">
                               {percentVsLastBuy !== undefined && percentVsLastBuy > 0 ? (
-                                <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-100/90 text-amber-950 border border-amber-300 text-[11px] font-extrabold shadow-2xs">
+                                <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-200 text-[11px] font-medium">
                                   <TrendingUp size={13} className="text-amber-800 shrink-0" />
                                   <span>
-                                    <strong className="text-amber-900 font-black">+{percentVsLastBuy}% higher</strong> than last buy (Rs. {lastBuyCost.toLocaleString('en-IN')})
+                                    <strong className="font-semibold">+{percentVsLastBuy}% higher</strong> than last buy (Rs. {lastBuyCost.toLocaleString('en-IN')})
                                   </span>
                                 </div>
                               ) : percentVsLastBuy !== undefined && percentVsLastBuy < 0 ? (
-                                <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100/90 text-emerald-950 border border-emerald-300 text-[11px] font-extrabold shadow-2xs">
+                                <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 text-emerald-900 border border-emerald-200 text-[11px] font-medium">
                                   <TrendingDown size={13} className="text-emerald-800 shrink-0" />
                                   <span>
-                                    <strong className="text-emerald-900 font-black">{Math.abs(percentVsLastBuy)}% lower</strong> than last buy (Rs. {lastBuyCost.toLocaleString('en-IN')})
+                                    <strong className="font-semibold">{Math.abs(percentVsLastBuy)}% lower</strong> than last buy (Rs. {lastBuyCost.toLocaleString('en-IN')})
                                   </span>
                                 </div>
                               ) : (
@@ -848,7 +865,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                           )}
                         </div>
 
-                        <div className="bg-white/80 p-2.5 rounded-xl border border-amber-200 text-[11px] space-y-1.5">
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-[11px] space-y-1.5">
                           <div className="flex justify-between items-center">
                             <span className="text-slate-500">Market Range:</span>
                             <span className="font-extrabold text-slate-800">
@@ -863,11 +880,11 @@ Contact Email: ganeshnagargoje1008@gmail.com
                                 href={displayBenchmark.sourceUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="font-bold text-blue-700 hover:text-blue-900 underline inline-flex items-center gap-1 truncate max-w-[170px]"
+                                className="font-semibold text-[#23408e] hover:underline inline-flex items-center gap-1 truncate max-w-[170px]"
                                 title={`Open source: ${displayBenchmark.source}`}
                               >
                                 <span className="truncate">{displayBenchmark.source}</span>
-                                <ExternalLink size={10} className="shrink-0 text-blue-600" />
+                                <ExternalLink size={10} className="shrink-0" />
                               </a>
                             ) : (
                               <span className="font-bold text-slate-800 truncate max-w-[150px]" title={displayBenchmark.source}>
@@ -878,15 +895,15 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
                           {/* Direct Attached Source Link */}
                           {displayBenchmark.sourceUrl && (
-                            <div className="pt-1.5 border-t border-amber-100 flex items-center justify-between text-[11px] gap-2">
+                            <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between text-[11px] gap-2">
                               <span className="text-slate-600 font-bold shrink-0 flex items-center gap-1">
-                                <Link2 size={11} className="text-amber-700" /> Source Link:
+                                <Link2 size={11} className="text-[#23408e]" /> Source Link:
                               </span>
                               <a
                                 href={displayBenchmark.sourceUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="text-blue-700 hover:text-blue-900 font-black inline-flex items-center gap-1 underline truncate max-w-[190px]"
+                                className="text-[#23408e] hover:underline font-semibold inline-flex items-center gap-1 underline truncate max-w-[190px]"
                                 title={displayBenchmark.sourceUrl}
                               >
                                 <span className="truncate">
@@ -899,7 +916,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
                           {/* Additional Grounding Sources */}
                           {displayBenchmark.sources && displayBenchmark.sources.length > 1 && (
-                            <div className="pt-1 border-t border-amber-100/70 flex flex-wrap items-center gap-1 text-[10px]">
+                            <div className="pt-1 border-t border-slate-200 flex flex-wrap items-center gap-1 text-[10px]">
                               <span className="text-slate-400 font-bold">Related:</span>
                               {displayBenchmark.sources.slice(1, 3).map((s, idx) => (
                                 <a
@@ -925,9 +942,9 @@ Contact Email: ganeshnagargoje1008@gmail.com
                     )}
                   </div>
 
-                  <div className="bg-white/90 p-2.5 rounded-xl border border-amber-200 text-[11px] text-amber-950">
-                    <span className="font-black flex items-center gap-1">
-                      <ShieldCheck size={13} className="text-amber-700" /> Evaluation Target:
+                  <div className="bg-[#f5f8fd] p-2.5 rounded-lg border border-[#d9e3f5] text-[11px] text-slate-700">
+                    <span className="font-semibold text-slate-900 flex items-center gap-1">
+                      <ShieldCheck size={13} className="text-[#23408e]" /> Evaluation Target:
                     </span>
                     Target quotes with 45-day credit and delivery within 3 days for maximum composite ranking.
                   </div>
@@ -937,13 +954,13 @@ Contact Email: ganeshnagargoje1008@gmail.com
           </div>
 
           {/* SECTION 3: Vendor Mapping & Selection (PRD 3.3 & 3.4) */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+          <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <Users size={14} className="text-amber-500" /> 3. Approved Vendors for Material Code #{matCode} ({eligibleVendors.length} Eligible)
+                <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Users size={14} className="text-[#23408e]" /> 3. Approved Vendors for Material Code #{matCode} ({eligibleVendors.length} Eligible)
                 </span>
-                <p className="text-[11px] text-slate-500 font-medium">
+                <p className="text-xs text-slate-500 mt-0.5">
                   Select which vendors will receive the automated RFQ enquiry email and quote submission link.
                 </p>
               </div>
@@ -952,7 +969,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
                 <button
                   type="button"
                   onClick={handleSelectAllVendors}
-                  className="px-2.5 py-1 text-xs font-extrabold text-amber-700 hover:bg-amber-100 rounded-lg transition-colors cursor-pointer"
+                  className="px-2.5 py-1 text-xs font-semibold text-[#23408e] hover:bg-[#f5f8fd] rounded-lg transition-colors cursor-pointer shrink-0"
                 >
                   {selectedVendorIds.length === eligibleVendors.length ? 'Deselect All' : 'Select All'}
                 </button>
@@ -960,7 +977,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
             </div>
 
             {eligibleVendors.length === 0 ? (
-              <div className="bg-white p-6 rounded-xl border border-dashed border-slate-300 text-center text-xs text-slate-500">
+              <div className="bg-slate-50 p-6 rounded-lg border border-dashed border-slate-300 text-center text-sm text-slate-500">
                 No vendors currently mapped to Material Code #{matCode}. You can still register the PR and invite vendors manually.
               </div>
             ) : (
@@ -973,13 +990,13 @@ Contact Email: ganeshnagargoje1008@gmail.com
                       onClick={() => toggleVendorSelection(vendor.id)}
                       className={`p-3 rounded-xl border transition-all cursor-pointer flex items-start gap-2.5 select-none ${
                         isChecked
-                          ? 'bg-amber-50/70 border-amber-400 shadow-2xs'
-                          : 'bg-white border-slate-200 hover:border-slate-300'
+                          ? 'bg-[#f5f8fd] border-[#23408e] ring-1 ring-[#23408e]/20'
+                          : 'bg-white border-slate-200 hover:border-[#c9d6f2]'
                       }`}
                     >
                       <div
                         className={`w-5 h-5 rounded-md flex items-center justify-center mt-0.5 shrink-0 transition-colors ${
-                          isChecked ? 'bg-amber-500 text-slate-950 font-black' : 'border border-slate-300 bg-white'
+                          isChecked ? 'bg-[#23408e] text-white' : 'border border-slate-300 bg-white'
                         }`}
                       >
                         {isChecked && <Check size={13} strokeWidth={3} />}
@@ -987,23 +1004,23 @@ Contact Email: ganeshnagargoje1008@gmail.com
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
-                          <h4 className="text-xs font-black text-slate-900 truncate" title={vendor.name}>
+                          <h4 className="text-sm font-semibold text-slate-900 truncate" title={vendor.name}>
                             {vendor.name}
                           </h4>
-                          <span className="text-[10px] font-black px-1.5 py-0.2 bg-slate-100 rounded-sm text-slate-700 shrink-0">
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-amber-800 shrink-0">
                             ★ {vendor.rating.toFixed(1)}
                           </span>
                         </div>
 
-                        <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                        <p className="text-[11px] text-slate-500 truncate mt-0.5">
                           {vendor.contactPerson} • {vendor.email}
                         </p>
 
-                        <div className="flex items-center gap-2 mt-2 text-[10px] font-bold text-slate-600 flex-wrap">
-                          <span className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                            <CreditCard size={10} className="text-amber-600" /> {vendor.standardCreditPeriod}
+                        <div className="flex items-center gap-1.5 mt-2 text-[10px] font-semibold text-slate-600 flex-wrap">
+                          <span className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded-full border border-slate-200">
+                            <CreditCard size={10} className="text-[#23408e]" /> {vendor.standardCreditPeriod}
                           </span>
-                          <span className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                          <span className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded-full border border-slate-200">
                             <Clock size={10} className="text-slate-500" /> {vendor.avgLeadDays}d Lead
                           </span>
                         </div>
@@ -1016,27 +1033,27 @@ Contact Email: ganeshnagargoje1008@gmail.com
           </div>
 
           {/* Footer Actions */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-200">
-            <div className="text-xs text-slate-500">
-              <strong className="text-slate-900 font-extrabold">{selectedVendorIds.length}</strong> vendors selected for automated email dispatch.
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+            <div className="text-sm text-slate-600">
+              <strong className="text-slate-900 font-semibold">{selectedVendorIds.length}</strong> vendor{selectedVendorIds.length === 1 ? '' : 's'} selected to receive the RFQ email and quote link.
             </div>
 
             <div className="flex items-center gap-2.5 w-full sm:w-auto">
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs rounded-xl transition-colors cursor-pointer"
+                className="flex-1 sm:flex-none px-4 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-sm rounded-lg transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isSending || selectedVendorIds.length === 0}
-                className="flex-1 sm:flex-none px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+                className="flex-1 sm:flex-none px-5 py-2.5 bg-[#23408e] hover:bg-[#1b3170] text-white font-semibold text-sm rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSending ? (
                   <>
-                    <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Dispatching RFQs...
                   </>
                 ) : (

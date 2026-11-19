@@ -4,8 +4,8 @@
  * Uses Gemini when configured, with a pattern-matching fallback for text PDFs.
  */
 import type { GoogleGenAI } from '@google/genai';
-import { QUOTE_DOC_MIME, GST_RATES, extractDocumentText, toIsoDate } from './quoteExtraction';
-import type { QuoteDocKind } from './quoteExtraction';
+import { QUOTE_DOC_MIME, GST_RATES, extractDocumentText, toIsoDate } from './quoteExtraction.js';
+import type { QuoteDocKind } from './quoteExtraction.js';
 
 export const INVOICE_KINDS: QuoteDocKind[] = ['pdf', 'png', 'jpeg', 'webp'];
 

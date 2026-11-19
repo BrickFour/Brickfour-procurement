@@ -23,10 +23,20 @@ export function withVendorQuoteTokens(pr: ProjectRequirement, vendorIds: string[
   return changed ? { ...pr, vendorQuoteTokens: tokens } : pr;
 }
 
+/**
+ * Public address vendors use to reach the app. Set VITE_PUBLIC_APP_URL (e.g. https://vyas-inventory-kohl.vercel.app)
+ * so links stay correct even when an RFQ is sent from a local/dev copy (localhost links do not work for vendors).
+ */
+export function publicAppUrl(): string {
+  const configured = String(import.meta.env.VITE_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(configured)) return configured;
+  return window.location.origin;
+}
+
 /** Full link a vendor opens to submit (or revise) their quotation for a PR. */
 export function buildVendorQuoteUrl(prId: string, vendorId: string, token: string): string {
   const params = new URLSearchParams({ pr: prId, v: vendorId, t: token });
-  return `${window.location.origin}${VENDOR_QUOTE_PATH}?${params.toString()}`;
+  return `${publicAppUrl()}${VENDOR_QUOTE_PATH}?${params.toString()}`;
 }
 
 export function isVendorQuotePage(): boolean {
