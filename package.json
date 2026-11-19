@@ -1,0 +1,47 @@
+{
+  "name": "vyas-inventory-tool",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && node scripts/build-server.mjs",
+    "start": "node build/server.cjs",
+    "clean": "node -e \"for (const d of ['dist','build']) require('fs').rmSync(d,{recursive:true,force:true})\"",
+    "seed": "tsx scripts/seed-db.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "mammoth": "^1.8.0",
+    "mongodb": "^7.9.0",
+    "motion": "^12.23.24",
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.15.2",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "recharts": "^3.9.2",
+    "resend": "^6.18.1",
+    "word-extractor": "^1.0.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/pdfkit": "^0.13.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  }
+}

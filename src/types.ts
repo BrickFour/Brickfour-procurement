@@ -1,0 +1,469 @@
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  password?: string;
+  role: 'admin' | 'site_manager';
+  phone?: string;
+  title?: string; // e.g. "Lead Site Engineer", "Senior Project Manager"
+  assignedProjectId?: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  location: string;
+  manager: string; // Manager display name
+  managerId?: string; // Linked User ID
+  managerEmail?: string; // Manager Email credential
+  managerPassword?: string; // Manager Password credential
+  startDate: string;
+  status: 'planning' | 'ongoing' | 'completed' | 'on_hold';
+  createdByAdminId?: string;
+}
+
+export type MaterialCategory = 'Structural' | 'Finishing' | 'Masonry' | 'Plumbing' | 'Electrical' | 'Others' | string;
+
+export type BillType = 'GST' | 'URD';
+
+export interface RateHistoryPoint {
+  id?: string;
+  date: string; // YYYY-MM-DD
+  rate: number;
+  quantity?: number;
+  totalPrice?: number;
+  vendorName?: string;
+  notes?: string;
+  billType?: BillType;
+  billNumber?: string;
+  gstRate?: number;
+  gstAmount?: number;
+  baseAmount?: number;
+  vendorGstin?: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+}
+
+export interface Material {
+  id: string;
+  projectId: string; // The project this stock belongs to
+  name: string;
+  category: MaterialCategory;
+  unit: string; // e.g., "Brass", "Bags", "Tons", "Pieces", "Liters"
+  currentStock: number;
+  minThreshold: number; // For low stock alert
+  unitCost: number; // Rate per unit in Local Currency (Rs)
+  totalPrice?: number; // Total price = quantity * rate
+  vendorName?: string; // Vendor / Supplier name
+  rateHistory?: RateHistoryPoint[];
+  materialCode?: string; // Grouping code e.g. "001", "002"
+  materialGroup?: string; // Group name e.g. "Cement & Binding", "Steel"
+  billType?: BillType; // 'GST' or 'URD'
+  billNumber?: string; // Invoice / Bill / Voucher #
+  gstRate?: number; // GST Rate percentage (e.g. 5, 12, 18, 28, or 0)
+  gstAmount?: number; // Tax portion
+  baseAmount?: number; // Pre-tax taxable base
+  vendorGstin?: string;
+}
+
+export interface InventoryTransaction {
+  id: string;
+  projectId: string;
+  materialId: string;
+  type: 'addition' | 'consumption';
+  quantity: number;
+  rate?: number;
+  totalPrice?: number;
+  vendorName?: string;
+  invoiceUrl?: string;
+  invoiceFileName?: string;
+  date: string; // YYYY-MM-DD
+  notes: string;
+  operator: string; // Person who performed the action
+  billType?: BillType;
+  billNumber?: string;
+  gstRate?: number;
+  gstAmount?: number;
+  baseAmount?: number;
+  vendorGstin?: string;
+}
+
+export interface QueryEmailLog {
+  id: string;
+  type: 'New Query' | 'Query Reply' | 'Status Update';
+  fromName: string;
+  fromRole: string;
+  toEmail: string;
+  subject: string;
+  body: string;
+  sentAt: string;
+}
+
+export interface QueryResponse {
+  id: string;
+  authorUserId: string;
+  authorName: string;
+  authorRole: 'admin' | 'site_manager';
+  message: string;
+  createdAt: string;
+  dispatchedToEmail?: string;
+}
+
+export interface SiteQuery {
+  id: string;
+  projectId: string;
+  projectName: string;
+  materialId?: string;
+  materialName?: string;
+  raisedByUserId: string;
+  raisedByName: string;
+  authorEmail?: string;
+  targetEmail?: string;
+  subject: string;
+  category: 'Stock Deficit' | 'Quality Issue' | 'Delivery Delay' | 'Budget Approval' | 'General Query';
+  urgency: 'Low' | 'Medium' | 'High' | 'Urgent';
+  description: string;
+  photoProofUrl?: string; // Compulsory uploaded photo evidence
+  status: 'Open' | 'In Progress' | 'Resolved';
+  createdAt: string;
+  responses: QueryResponse[];
+  emailLog?: QueryEmailLog[];
+}
+
+export interface ContractorBill {
+  id: string;
+  billNumber: string;
+  date: string;
+  amount: number;
+  status: 'Approved' | 'Paid' | 'Pending Review' | 'Disputed';
+  invoiceUrl?: string;
+  invoiceFileName?: string;
+  notes?: string;
+}
+
+export type ContractorCategory = 'Civil & Concrete' | 'Electrical Works' | 'Plumbing & Sanitation' | 'Steel & Structural' | 'Interior & Finishing' | 'HVAC & Firefighting' | 'Earthworks' | 'Others' | string;
+
+export interface ContractorRecord {
+  id: string;
+  firmName: string;
+  category: ContractorCategory;
+  projectId: string;
+  projectName: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  pastBilling: number;
+  currentBilling: number;
+  totalEstimatedBilling: number;
+  currentBillingStatus: 'Submitted' | 'Verified' | 'Approved' | 'Under Audit' | 'Query Raised' | 'Payment Processing';
+  statusReason?: string;
+  pastBills: ContractorBill[];
+  createdAt: string;
+}
+
+export interface InternalTransferRecord {
+  id: string;
+  materialId?: string;
+  materialName: string;
+  category: string;
+  outwardProjectId: string;
+  outwardProjectName: string;
+  inwardProjectId: string;
+  inwardProjectName: string;
+  quantity: number;
+  unit: string;
+  rate: number;
+  amount: number; // quantity * rate
+  status: 'Dispatched' | 'In Transit' | 'Received & Verified' | 'Rejected / Issue';
+  transferDate: string;
+  photoUrl?: string;
+  photoFileName?: string;
+  vehicleNumber?: string;
+  driverName?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+// -------------------------------------------------------------
+// Vendor Enquiry & Quote Comparison Interfaces (PRD Requirements)
+// -------------------------------------------------------------
+
+export interface Vendor {
+  id: string;
+  name: string;
+  contactPerson: string;
+  email: string;
+  phone: string;
+  address: string;
+  gstin: string;
+  rating: number; // 0.0 - 5.0
+  suppliedMaterialCodes: string[]; // e.g. ['001', '002', '003']
+  standardCreditPeriod: string; // e.g. "30 Days", "45 Days", "15 Days", "Advance"
+  avgLeadDays: number; // e.g. 2
+  status: 'Approved' | 'Verified' | 'Preferred' | 'Under Review';
+}
+
+export interface MarketPriceBenchmark {
+  materialCode: string; // e.g. "001"
+  materialName: string; // e.g. "Cement (OPC 53 Grade)"
+  category: string;
+  unit: string;
+  currentMarketPrice: number; // Rs per unit
+  minMarketPrice: number;
+  maxMarketPrice: number;
+  lastUpdated: string;
+  source: string;
+  trend: 'stable' | 'up' | 'down';
+  weeklyChangePct: number;
+  sourceUrl?: string; // Direct online reference link
+  sources?: { title: string; url: string }[]; // Additional grounding sources
+  percentVsLastBuy?: number; // % comparison to last purchase rate
+  lastBuyPrice?: number; // Previous recorded purchase cost
+  isAiFetched?: boolean; // Flag indicating fetched live via Gemini online search
+  fetchedAt?: string;
+  summary?: string;
+}
+
+export type FuturePeriodKey = 'current' | '1m' | '3m' | '6m' | '1y' | '2y' | '3y';
+
+export interface FutureRatePredictionPoint {
+  periodKey: FuturePeriodKey;
+  periodLabel: string; // e.g. "Current (Today)", "After 1 Month", "After 3 Months", "After 6 Months", "After 1 Year", "After 2 Years", "After 3 Years"
+  targetDate: string; // e.g. "Oct 2026", "Nov 2026", "Jan 2027", "Apr 2027", "Oct 2027", "Oct 2028", "Oct 2029"
+  predictedRate: number; // in INR
+  minRate: number;
+  maxRate: number;
+  percentChangeVsCurrent: number; // % delta vs today's rate
+  trend: 'up' | 'down' | 'stable';
+  keyDrivers: string; // Market catalyst / inflation / demand factor
+}
+
+export interface FutureRatePredictionResult {
+  materialName: string;
+  category: string;
+  unit: string;
+  currentRate: number;
+  asOfDate: string;
+  forecastConfidence: 'High' | 'Moderate' | 'Provisional';
+  macroSummary: string;
+  predictions: FutureRatePredictionPoint[];
+  sources: { title: string; url: string }[];
+}
+
+export type PRStatus = 'Draft' | 'Enquiry Sent' | 'Quotes Received' | 'Under Comparison' | 'Shortlisted' | 'Awarded' | 'Closed';
+
+export interface ProjectRequirement {
+  id: string; // e.g. "PR-2026-001"
+  token: string; // e.g. "TOK-892147"
+  projectId: string;
+  projectName: string;
+  materialId?: string;
+  materialName: string;
+  materialCode: string; // Standard Material Code e.g. "001", "002"
+  materialGroup?: string;
+  category: string;
+  quantity: number;
+  unit: string;
+  requiredDate: string; // YYYY-MM-DD
+  targetBudgetRate?: number; // Rs. / unit
+  urgency: 'Standard' | 'High' | 'Immediate';
+  specifications: string;
+  deliveryAddress: string;
+  specialInstructions?: string;
+  status: PRStatus;
+  raisedByUserId: string;
+  raisedByName: string;
+  createdAt: string;
+  invitedVendorIds: string[];
+  selectedVendorId?: string; // Awarded vendor
+  shortlistedVendorIds?: string[]; // Top 3 vendors shortlisted
+  enquiryDispatchedAt?: string;
+  vendorQuoteTokens?: Record<string, string>; // vendorId -> secret token for the vendor's quote submission link
+  receivingHours?: string; // e.g. "08:00-19:00, Mon-Sat"
+  unloadingConstraints?: string; // e.g. "Max 10-wheeler truck; no entry 22:00-06:00"
+  quoteDeadline?: string; // ISO date-time after which vendors can no longer submit quotes
+  purchaseOrder?: PurchaseOrderRef; // PO issued after the PR was awarded
+}
+
+/** A delivery received against a PO, with the vendor's invoice (amount calculated from the PO terms) */
+export interface PurchaseOrderReceipt {
+  id: string; // e.g. "PO-2026-0001-R1"
+  receivedQty: number;
+  receivedOn: string; // YYYY-MM-DD
+  invoiceNumber: string;
+  invoiceDate: string; // YYYY-MM-DD
+  baseAmount: number;
+  gstRate: number;
+  gstAmount: number;
+  freightShare: number;
+  loadingShare: number;
+  computedTotal: number; // as per PO terms
+  invoiceTotal: number; // as per vendor invoice (defaults to computedTotal)
+  variance: number; // invoiceTotal - computedTotal
+  notes?: string;
+  recordedBy?: string;
+  recordedAt: string;
+  invoiceFile?: { id: string; name: string; size: number; mimeType: string };
+  lineItems?: InvoiceLineItem[]; // line items read from the uploaded invoice
+  // Payment tracking (due date from the PO payment terms, counted from the invoice date)
+  paymentTerms?: string;
+  creditDays?: number;
+  dueDate?: string; // YYYY-MM-DD
+  reminderOn?: string; // YYYY-MM-DD, 2 days before the due date
+  paymentStatus?: 'Unpaid' | 'Paid';
+  paidOn?: string;
+  paymentReference?: string;
+  paidBy?: string;
+  reminderSentAt?: string;
+  reminderEmailStatus?: 'sent' | 'failed' | 'no-recipient';
+}
+
+/** A line read from a vendor's tax invoice */
+export interface InvoiceLineItem {
+  description: string;
+  hsn?: string;
+  quantity?: number;
+  unit?: string;
+  rate?: number;
+  gstRate?: number;
+  amount?: number;
+}
+
+/** Details read automatically from an uploaded vendor invoice */
+export interface ExtractedInvoice {
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  vendorGstin?: string;
+  poReference?: string;
+  lineItems: InvoiceLineItem[];
+  materialQuantity?: number;
+  taxableAmount?: number;
+  gstAmount?: number;
+  freightCharges?: number;
+  loadingCharges?: number;
+  invoiceTotal?: number;
+}
+
+/** In-app notification (dues, quotations, purchase orders, deliveries) */
+export interface AppNotification {
+  id: string;
+  type:
+    | 'quote-received'
+    | 'quote-declined'
+    | 'rfq-sent'
+    | 'po-issued'
+    | 'po-email-failed'
+    | 'delivery-recorded'
+    | 'payment-due'
+    | 'payment-overdue'
+    | 'payment-recorded'
+    | 'query-raised'
+    | 'query-reply'
+    | 'query-status';
+  title: string;
+  message: string;
+  severity: 'info' | 'success' | 'warning' | 'danger';
+  projectId?: string;
+  link?: { view: 'rfqs' | 'pos' | 'queries'; prId?: string; poNumber?: string; queryId?: string };
+  createdAt: string;
+  read: boolean;
+}
+
+/** Purchase order as tracked in the purchase_orders collection (PDF served separately) */
+export interface PurchaseOrderRecord {
+  poNumber: string;
+  prId: string;
+  vendorId: string;
+  vendorName: string;
+  vendorEmail?: string;
+  vendorGstin?: string;
+  quoteId: string;
+  materialName: string;
+  projectName: string;
+  projectId?: string;
+  materialId?: string;
+  materialCode?: string;
+  unit: string;
+  orderedQty: number;
+  rate: number;
+  gstRate: number;
+  freightCharges: number;
+  loadingCharges: number;
+  grandTotal: number;
+  deliveryBy: string;
+  paymentTerms?: string;
+  creditDays?: number;
+  receivedQty: number;
+  invoicedAmount: number;
+  receipts: PurchaseOrderReceipt[];
+  deliveryStatus: 'Pending' | 'Partially Received' | 'Received';
+  status: 'Issued' | 'Cancelled';
+  issuedAt: string;
+  issuedBy?: string;
+  emailStatus: 'sending' | 'sent' | 'failed' | 'no-email';
+  emailedTo?: string;
+}
+
+/** Reference to a system-generated purchase order (full PO + PDF are stored in the purchase_orders collection) */
+export interface PurchaseOrderRef {
+  poNumber: string; // e.g. "PO-2026-0001"
+  vendorId: string;
+  vendorName: string;
+  grandTotal: number;
+  issuedAt: string; // ISO
+  emailedTo?: string;
+  emailStatus: 'sending' | 'sent' | 'failed' | 'no-email';
+}
+
+export type QuoteStatus = 'Submitted' | 'Under Review' | 'Shortlisted' | 'Awarded' | 'Rejected' | 'Declined';
+
+/** How the vendor provided their quotation */
+export type QuoteSubmissionMethod = 'text' | 'pdf' | 'word' | 'image-excel' | 'form';
+
+export interface VendorQuotation {
+  id: string; // e.g. "QUOTE-101"
+  prId: string; // Associated PR ID
+  token: string;
+  materialCode: string;
+  materialName: string;
+  vendorId: string;
+  vendorName: string;
+  vendorEmail?: string;
+  vendorPhone?: string;
+  unit: string;
+
+  // Local (non-registered) vendor details, entered by the site manager / admin via "Add Quote"
+  isLocalVendor?: boolean;
+  vendorContactPerson?: string;
+  vendorGstin?: string;
+  vendorAddress?: string;
+  addedByName?: string;
+
+  // ---- Key figures (all required except remarks) ----
+  quotedRate: number; // 1. Unit rate (Rs. per unit, excl. GST)
+  quantity: number; // 2. Quantity the vendor can supply
+  gstRate: number; // 3. GST %
+  freightCharges: number; // 4. Freight / transport (Rs.)
+  loadingCharges: number; // 5. Loading charges (Rs.)
+  totalAmount: number; // 6. Total price (Rs., incl. GST, freight & loading)
+  deliveryDays: number; // 7. Delivery time in days (derived from the promised date when that is given)
+  promisedDeliveryDate?: string; //    ...or promised delivery date (YYYY-MM-DD)
+  validityDays: number; // 8. Quote validity (days)
+  paymentTerms: string; // 9. Payment terms, e.g. "30 days credit"
+  creditDays: number; //    credit days parsed from the payment terms (0 = advance / COD)
+  warranty: string; // 10. Warranty
+  remarks?: string; // optional
+
+  submissionMethod?: QuoteSubmissionMethod;
+  quoteText?: string; // quotation text typed / pasted by the vendor
+  attachment?: { id: string; name: string; size: number; mimeType: string }; // vendor's uploaded quotation file
+  declineReason?: string;
+
+  evaluationScore?: number; // 0 - 100 calculated score
+  rank?: number; // 1, 2, 3
+  status: QuoteStatus;
+  submittedAt: string;
+  submittedVia?: 'vendor-portal' | 'internal'; // vendor-portal = submitted by the vendor through their quote link
+}
+
+
