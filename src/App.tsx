@@ -137,12 +137,7 @@ export default function App() {
     const saved = localStorage.getItem('builder_current_user');
     if (saved) {
       try {
-        const parsed = JSON.parse(saved);
-        if (parsed.role === 'admin') return { ...parsed, name: 'Admin', email: 'admin@vyasgroup.com' };
-        if (parsed.id === 'sm-1' || parsed.name === 'Rajesh Sharma') return { ...parsed, name: 'Site Manager 1', email: 'sitemanager1@vyasgroup.com' };
-        if (parsed.id === 'sm-2' || parsed.name === 'Ananya Goel') return { ...parsed, name: 'Site Manager 2', email: 'sitemanager2@vyasgroup.com' };
-        if (parsed.id === 'sm-3' || parsed.name === 'David Miller') return { ...parsed, name: 'Site Manager 3', email: 'sitemanager3@vyasgroup.com' };
-        return parsed;
+        return JSON.parse(saved);
       } catch (e) {
         // fallback to default
       }
@@ -1432,11 +1427,7 @@ export default function App() {
         projects={projects}
         isLiveDatabase={isLiveDatabase}
         onLoginSuccess={(user) => {
-          const cleanName = user.role === 'admin'
-            ? 'Admin'
-            : (user.name === 'Vikramaditya Rao' ? 'Admin' : (user.name === 'Rajesh Sharma' || user.id === 'sm-1' ? 'Site Manager 1' : (user.name === 'Ananya Goel' || user.id === 'sm-2' ? 'Site Manager 2' : (user.name === 'David Miller' || user.id === 'sm-3' ? 'Site Manager 3' : (user.name.startsWith('Site Manager') ? user.name : 'Site Manager')))));
-          const sanitizedUser = { ...user, name: cleanName };
-          setCurrentUser(sanitizedUser);
+          setCurrentUser(user);
           if (user.assignedProjectId) {
             setSelectedProjectId(user.assignedProjectId);
           }
@@ -1498,27 +1489,15 @@ export default function App() {
               className="h-10 pl-1.5 pr-1.5 sm:pr-3 flex items-center gap-2.5 bg-white border border-slate-200 rounded-lg shrink-0"
             >
               <div className="w-7 h-7 rounded-md bg-[#23408e] text-white text-xs font-bold flex items-center justify-center shrink-0" aria-hidden="true">
-                {currentUser.role === 'admin' ? 'A' : (currentUser.name || 'S').trim().charAt(0).toUpperCase()}
+                {(currentUser.name || (currentUser.role === 'admin' ? 'A' : 'S')).trim().charAt(0).toUpperCase()}
               </div>
               <div className="hidden sm:flex items-center gap-2 leading-tight">
                 <span className="text-sm font-semibold text-slate-900">
-                  {currentUser.role === 'admin'
-                    ? 'Admin'
-                    : (currentUser.name && currentUser.name.startsWith('Site Manager')
-                        ? currentUser.name
-                        : (currentUser.id === 'sm-1'
-                            ? 'Site Manager 1'
-                            : (currentUser.id === 'sm-2'
-                                ? 'Site Manager 2'
-                                : (currentUser.id === 'sm-3'
-                                    ? 'Site Manager 3'
-                                    : 'Site Manager'))))}
+                  {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : 'Site Manager')}
                 </span>
-                {currentUser.role !== 'admin' && (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
-                    Site Manager
-                  </span>
-                )}
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
+                  {currentUser.role === 'admin' ? 'Admin' : 'Site Manager'}
+                </span>
               </div>
             </div>
 

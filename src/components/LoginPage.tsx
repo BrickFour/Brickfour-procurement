@@ -31,163 +31,55 @@ export default function LoginPage({
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  // Primary Admin User
-  const primaryAdmin: User = users.find((u) => u.role === 'admin') || {
-    id: 'admin-1',
-    name: 'Admin',
-    email: 'admin@vyasgroup.com',
-    role: 'admin' as const,
-    title: 'Chief Operations Administrator',
-    phone: '+91 98200 11223',
-  };
+  // Site manager of a project: the linked user, or one built from the project's manager details
+  const managerForProject = (p: Project): User =>
+    users.find((u) => u.role === 'site_manager' && (u.id === p.managerId || u.assignedProjectId === p.id)) || {
+      id: p.managerId || `sm-${p.id}`,
+      name: p.manager || 'Site Manager',
+      email: p.managerEmail || '',
+      password: p.managerPassword,
+      role: 'site_manager',
+      title: `Site Manager (${p.name})`,
+      assignedProjectId: p.id,
+    };
 
-  // Site Managers for Quick Access (dummy labels: Site Manager 1, 2, 3)
-  const siteManagers = users.filter((u) => u.role === 'site_manager');
-  const smAccounts = [
-    {
-      label: 'Site Manager 1',
-      user: siteManagers[0] || {
-        id: 'sm-1',
-        name: 'Site Manager 1',
-        email: 'sitemanager1@vyasgroup.com',
-        role: 'site_manager' as const,
-        title: 'Site Manager (Project 1)',
-        assignedProjectId: projects[0]?.id || 'proj-1',
-      },
-    },
-    {
-      label: 'Site Manager 2',
-      user: siteManagers[1] || {
-        id: 'sm-2',
-        name: 'Site Manager 2',
-        email: 'sitemanager2@vyasgroup.com',
-        role: 'site_manager' as const,
-        title: 'Site Manager (Project 2)',
-        assignedProjectId: projects[1]?.id || 'proj-2',
-      },
-    },
-    {
-      label: 'Site Manager 3',
-      user: siteManagers[2] || {
-        id: 'sm-3',
-        name: 'Site Manager 3',
-        email: 'sitemanager3@vyasgroup.com',
-        role: 'site_manager' as const,
-        title: 'Site Manager (Project 3)',
-        assignedProjectId: projects[2]?.id || 'proj-3',
-      },
-    },
-  ];
+  // Quick Access: one-click sign in for each project's site manager (admins always sign in with email + password)
+  const smAccounts = projects.map((p) => ({ project: p, user: managerForProject(p) }));
 
-  // Handle Login Attempt
+  // Handle Login Attempt: exact email + exact password only
   const handleLoginSubmit = (e: FormEvent) => {
     e.preventDefault();
     setLoginError('');
 
     const rawEmail = loginEmail.trim().toLowerCase();
-    const cleanPass = loginPassword.trim();
+    const pass = loginPassword;
 
-    if (!rawEmail) {
-      setLoginError('Please enter an Email or select Quick Access.');
+    if (!rawEmail || !pass) {
+      setLoginError('Please enter your Email and Password.');
       return;
     }
 
-    // 1. Direct Admin matching aliases
-    const isAdminQuery =
-      rawEmail === 'admin' ||
-      rawEmail === 'admin@vyasgroup.com' ||
-      rawEmail === 'admin@bhandar.com' ||
-      rawEmail === 'admin@builderstore.com' ||
-      rawEmail.startsWith('admin@') ||
-      rawEmail === 'vikramaditya rao' ||
-      rawEmail === 'vikram';
-
-    if (isAdminQuery) {
-      const isPassValid =
-        !cleanPass ||
-        !primaryAdmin.password ||
-        primaryAdmin.password === cleanPass ||
-        ['admin', 'admin123', 'brickfour', 'brickfour123', 'bhandar', 'bhandar123', 'site123password', 'password', '123456'].includes(cleanPass.toLowerCase());
-
-      if (isPassValid) {
-        onLoginSuccess(primaryAdmin);
-        return;
-      }
-    }
-
-    // 2. Direct Site Manager aliases (sm1, sm2, sm3, site manager 1, 2, 3)
-    if (rawEmail === 'sm1' || rawEmail === 'sm-1' || rawEmail === 'site manager 1' || rawEmail.includes('sitemanager1')) {
-      onLoginSuccess(smAccounts[0].user);
-      return;
-    }
-    if (rawEmail === 'sm2' || rawEmail === 'sm-2' || rawEmail === 'site manager 2' || rawEmail.includes('sitemanager2')) {
-      onLoginSuccess(smAccounts[1].user);
-      return;
-    }
-    if (rawEmail === 'sm3' || rawEmail === 'sm-3' || rawEmail === 'site manager 3' || rawEmail.includes('sitemanager3')) {
-      onLoginSuccess(smAccounts[2].user);
-      return;
-    }
-
-    // 3. Match in registered users table (by email or full name)
-    const matchedUser = users.find(
-      (u) =>
-        u.email.toLowerCase() === rawEmail ||
-        u.name.toLowerCase() === rawEmail ||
-        u.email.toLowerCase().split('@')[0] === rawEmail
-    );
-
+    // 1. Registered users (admins and site managers)
+    const matchedUser = users.find((u) => (u.email || '').trim().toLowerCase() === rawEmail);
     if (matchedUser) {
-      const isPassValid =
-        !cleanPass ||
-        !matchedUser.password ||
-        matchedUser.password === cleanPass ||
-        ['admin', 'admin123', 'brickfour', 'brickfour123', 'bhandar', 'bhandar123', 'site123password', 'password', '123456'].includes(cleanPass.toLowerCase());
-
-      if (isPassValid) {
+      if (matchedUser.password && matchedUser.password === pass) {
         onLoginSuccess(matchedUser);
         return;
       }
+      setLoginError('Invalid Email or Password.');
+      return;
     }
 
-    // 4. Match in site manager credentials assigned in projects
+    // 2. Site manager credentials stored on a project
     const matchedProject = projects.find(
-      (p) =>
-        p.managerEmail?.toLowerCase() === rawEmail ||
-        p.manager?.toLowerCase() === rawEmail ||
-        p.name.toLowerCase().includes(rawEmail)
+      (p) => (p.managerEmail || '').trim().toLowerCase() === rawEmail && p.managerPassword && p.managerPassword === pass
     );
-
     if (matchedProject) {
-      const existingSM = users.find(
-        (u) => u.email.toLowerCase() === rawEmail || u.name.toLowerCase() === matchedProject.manager.toLowerCase()
-      );
-
-      if (existingSM) {
-        onLoginSuccess(existingSM);
-      } else {
-        const newSMUser: User = {
-          id: matchedProject.managerId || `sm-${Date.now()}`,
-          name: matchedProject.manager,
-          email: matchedProject.managerEmail || rawEmail,
-          password: cleanPass || 'site123password',
-          role: 'site_manager',
-          title: `Site Manager (${matchedProject.name})`,
-          assignedProjectId: matchedProject.id,
-        };
-        onLoginSuccess(newSMUser);
-      }
+      onLoginSuccess(managerForProject(matchedProject));
       return;
     }
 
-    // 5. Fallback password matching
-    if (['admin', 'admin123', 'site123password', 'brickfour', 'bhandar', 'password'].includes(cleanPass.toLowerCase()) && users.length > 0) {
-      const fallbackUser = users.find((u) => u.email.toLowerCase().includes(rawEmail) || u.name.toLowerCase().includes(rawEmail)) || primaryAdmin;
-      onLoginSuccess(fallbackUser);
-      return;
-    }
-
-    setLoginError('Invalid Email or Password. Enter valid credentials or click Quick Access.');
+    setLoginError('Invalid Email or Password.');
   };
 
   // Handle Quick Instant One-Click Login
@@ -309,7 +201,8 @@ export default function LoginPage({
             </button>
           </form>
 
-          {/* Quick Access (1-Click Instant Login: Admin + Site Manager 1, 2, 3) */}
+          {/* Quick Access (1-Click Instant Login: each project's Site Manager) */}
+          {smAccounts.length > 0 && (
           <div className="pt-5 mt-5 border-t border-slate-200 space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
@@ -319,47 +212,15 @@ export default function LoginPage({
             </div>
 
             <div className="space-y-2">
-              {/* Admin Button */}
-              <button
-                type="button"
-                id="quick-access-admin"
-                onClick={() => handleDirectQuickLogin(primaryAdmin)}
-                className="w-full p-2.5 bg-slate-50 hover:bg-indigo-50/40 border border-slate-200 hover:border-indigo-300 rounded-xl flex items-center justify-between text-left cursor-pointer transition-all group"
-                title="Click to log in immediately as Admin"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-950 to-indigo-600 text-white text-xs font-black flex items-center justify-center shrink-0">
-                    👑
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-slate-900 group-hover:text-indigo-600 text-xs transition-colors">
-                        Admin
-                      </span>
-                      <span className="text-[9px] bg-indigo-100 text-indigo-900 font-extrabold px-1.5 py-0.5 rounded border border-indigo-200">
-                        Admin
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      admin@vyasgroup.com
-                    </span>
-                  </div>
-                </div>
-                <span className="text-[10px] bg-white group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white font-extrabold px-2.5 py-1.5 rounded-lg border border-indigo-200 group-hover:border-transparent transition-all flex items-center gap-1">
-                  <span>Sign In</span>
-                  <ArrowRight size={11} />
-                </span>
-              </button>
-
-              {/* Site Managers 1, 2, 3 Buttons */}
+              {/* One Site Manager button per project */}
               {smAccounts.map((sm, index) => (
                 <button
-                  key={sm.user.id || `sm-${index}`}
+                  key={sm.project.id}
                   type="button"
                   id={`quick-access-sm-${index + 1}`}
                   onClick={() => handleDirectQuickLogin(sm.user)}
                   className="w-full p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 rounded-xl flex items-center justify-between text-left cursor-pointer transition-all group"
-                  title={`Click to log in immediately as ${sm.label}`}
+                  title={`Click to log in immediately as the Site Manager of ${sm.project.name}`}
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-slate-800 group-hover:bg-indigo-600 text-white text-xs font-black flex items-center justify-center shrink-0 transition-colors">
@@ -368,14 +229,14 @@ export default function LoginPage({
                     <div>
                       <div className="flex items-center gap-1.5">
                         <span className="font-bold text-slate-900 text-xs">
-                          {sm.label}
+                          {sm.project.name}
                         </span>
                         <span className="text-[9px] bg-slate-200/80 text-slate-700 font-bold px-1.5 py-0.5 rounded border border-slate-300">
                           Site Manager
                         </span>
                       </div>
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {sm.user.email}
+                      <span className="text-[10px] text-slate-500">
+                        {sm.project.location}
                       </span>
                     </div>
                   </div>
@@ -387,6 +248,7 @@ export default function LoginPage({
               ))}
             </div>
           </div>
+          )}
         </motion.div>
       </div>
 

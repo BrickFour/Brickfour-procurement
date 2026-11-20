@@ -47,77 +47,31 @@ export default function AuthModal({
     setLoginError('');
 
     const rawEmail = loginEmail.trim().toLowerCase();
-    const cleanPass = loginPassword.trim();
+    const cleanPass = loginPassword;
 
-    if (!rawEmail) {
-      setLoginError('Please enter an Email ID or select an account below.');
+    if (!rawEmail || !cleanPass) {
+      setLoginError('Please enter your Email ID and Password.');
       return;
     }
 
-    // 1. Direct Admin matching aliases
-    const isAdminQuery =
-      rawEmail === 'admin' ||
-      rawEmail === 'admin@bhandar.com' ||
-      rawEmail === 'admin@builderstore.com' ||
-      rawEmail.startsWith('admin@') ||
-      rawEmail === 'vikramaditya rao' ||
-      rawEmail === 'vikram';
-
-    if (isAdminQuery) {
-      const adminUser = users.find((u) => u.role === 'admin') || {
-        id: 'admin-1',
-        name: 'Vikramaditya Rao',
-        email: 'admin@bhandar.com',
-        role: 'admin' as const,
-        title: 'Chief Operations Administrator',
-        phone: '+91 98200 11223',
-      };
-
-      const isPassValid =
-        !cleanPass ||
-        !adminUser.password ||
-        adminUser.password === cleanPass ||
-        ['admin', 'admin123', 'bhandar', 'bhandar123', 'site123password', 'password', '123456'].includes(cleanPass.toLowerCase());
-
-      if (isPassValid) {
-        onSelectUser(adminUser);
-        setLoginEmail('');
-        setLoginPassword('');
-        onClose();
-        return;
-      }
-    }
-
-    // 2. Try finding in registered users
-    const matchedUser = users.find(
-      (u) =>
-        u.email.toLowerCase() === rawEmail ||
-        u.name.toLowerCase() === rawEmail ||
-        u.email.toLowerCase().split('@')[0] === rawEmail
-    );
+    // 1. Registered users: exact email + exact password
+    const matchedUser = users.find((u) => (u.email || '').trim().toLowerCase() === rawEmail);
 
     if (matchedUser) {
-      const isPassValid =
-        !cleanPass ||
-        !matchedUser.password ||
-        matchedUser.password === cleanPass ||
-        ['admin', 'admin123', 'bhandar', 'bhandar123', 'site123password', 'password', '123456'].includes(cleanPass.toLowerCase());
-
-      if (isPassValid) {
+      if (matchedUser.password && matchedUser.password === cleanPass) {
         onSelectUser(matchedUser);
         setLoginEmail('');
         setLoginPassword('');
         onClose();
         return;
       }
+      setLoginError('Invalid Email ID or Password.');
+      return;
     }
 
-    // 3. Try finding in projects manager credentials
+    // 2. Site manager credentials stored on a project
     const matchedProject = projects.find(
-      (p) =>
-        p.managerEmail?.toLowerCase() === rawEmail ||
-        p.manager?.toLowerCase() === rawEmail ||
-        p.name.toLowerCase().includes(rawEmail)
+      (p) => (p.managerEmail || '').trim().toLowerCase() === rawEmail && p.managerPassword && p.managerPassword === cleanPass
     );
 
     if (matchedProject) {
@@ -145,17 +99,7 @@ export default function AuthModal({
       return;
     }
 
-    // 4. Fallback password match
-    if (['admin', 'admin123', 'site123password', 'bhandar', 'password'].includes(cleanPass.toLowerCase()) && users.length > 0) {
-      const fallbackUser = users.find((u) => u.email.toLowerCase().includes(rawEmail) || u.name.toLowerCase().includes(rawEmail)) || users[0];
-      onSelectUser(fallbackUser);
-      setLoginEmail('');
-      setLoginPassword('');
-      onClose();
-      return;
-    }
-
-    setLoginError('Invalid Email ID or Password. Please check credentials or use Quick Switch below.');
+    setLoginError('Invalid Email ID or Password.');
   };
 
   const handleAddManager = (e: FormEvent) => {
@@ -355,20 +299,6 @@ export default function AuthModal({
                   <KeyRound size={14} className="text-indigo-600" /> Admin Issued Credentials (Click to Autofill)
                 </p>
                 <div className="space-y-1.5 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => setSampleLogin('admin@vyasgroup.com', 'admin')}
-                    className="w-full text-left p-2 bg-white hover:bg-red-50 border border-slate-200 rounded-xl flex items-center justify-between cursor-pointer transition-colors"
-                  >
-                    <div>
-                      <span className="font-bold text-[#781d22]">Admin Account:</span>{' '}
-                      <code className="text-slate-600">admin@vyasgroup.com</code>
-                    </div>
-                    <span className="text-[10px] bg-slate-100 text-slate-700 font-bold px-1.5 py-0.5 rounded">
-                      pass: admin
-                    </span>
-                  </button>
-
                   {siteManagers.slice(0, 3).map((sm) => (
                     <button
                       key={sm.id}

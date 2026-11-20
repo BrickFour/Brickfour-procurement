@@ -3,17 +3,24 @@ import type { Project, Material, InventoryTransaction, User, SiteQuery, Contract
 export const INITIAL_USERS: User[] = [
   {
     id: 'admin-1',
-    name: 'Admin',
-    email: 'admin@vyasgroup.com',
-    password: 'admin',
+    name: 'Ganesh Shivaji Veer',
+    email: 'purchase@brickfour.com',
+    password: 'Ganesh@123',
     role: 'admin',
-    title: 'Chief Operations Administrator',
-    phone: '+91 98200 11223',
+    title: 'Purchase Executive (EXECUTIVE) - Purchase',
+  },
+  {
+    id: 'admin-2',
+    name: 'Prajeet Patil',
+    email: 'purchase.urbanedge@gmail.com',
+    password: 'Prajeet@123',
+    role: 'admin',
+    title: 'Purchase Executive (EXECUTIVE) - Purchase',
   },
   {
     id: 'sm-1',
     name: 'Site Manager 1',
-    email: 'sitemanager1@vyasgroup.com',
+    email: 'sitemanager1@brickfour.com',
     password: 'site123password',
     role: 'site_manager',
     title: 'Senior Site Engineer (Lotus Heights)',
@@ -23,41 +30,12 @@ export const INITIAL_USERS: User[] = [
   {
     id: 'sm-2',
     name: 'Site Manager 2',
-    email: 'sitemanager2@vyasgroup.com',
+    email: 'sitemanager2@brickfour.com',
     password: 'site123password',
     role: 'site_manager',
     title: 'Project Lead (Grand Horizon)',
     phone: '+91 97230 55441',
     assignedProjectId: 'proj-2',
-  },
-  {
-    id: 'sm-3',
-    name: 'Site Manager 3',
-    email: 'sitemanager3@vyasgroup.com',
-    password: 'site123password',
-    role: 'site_manager',
-    title: 'Construction Engineer (Apex Plaza)',
-    phone: '+91 96500 88776',
-    assignedProjectId: 'proj-3',
-  },
-  {
-    id: 'sm-4',
-    name: 'Site Manager 4',
-    email: 'sitemanager4@vyasgroup.com',
-    password: 'site123password',
-    role: 'site_manager',
-    title: 'Site Manager (Civil)',
-    phone: '+91 98765 12345',
-  },
-  {
-    id: 'sm-pqr',
-    name: 'Site Manager 5',
-    email: 'ganeshnagargoje.syncai@gmail.com',
-    password: 'site123password',
-    role: 'site_manager',
-    title: 'Site Manager (PQR Project)',
-    phone: '+91 98234 56789',
-    assignedProjectId: 'proj-pqr',
   },
 ];
 
@@ -68,7 +46,7 @@ export const INITIAL_PROJECTS: Project[] = [
     location: 'Sector 45, Greenfield Metro, Noida',
     manager: 'Site Manager 1',
     managerId: 'sm-1',
-    managerEmail: 'sitemanager1@vyasgroup.com',
+    managerEmail: 'sitemanager1@brickfour.com',
     managerPassword: 'site123password',
     startDate: '2026-03-01',
     status: 'ongoing',
@@ -79,33 +57,11 @@ export const INITIAL_PROJECTS: Project[] = [
     location: 'Hillview Enclave, Block C, Pune',
     manager: 'Site Manager 2',
     managerId: 'sm-2',
-    managerEmail: 'sitemanager2@vyasgroup.com',
+    managerEmail: 'sitemanager2@brickfour.com',
     managerPassword: 'site123password',
     startDate: '2026-05-15',
     status: 'ongoing',
   },
-  {
-    id: 'proj-3',
-    name: 'Apex Commercial Plaza',
-    location: 'Plot 102, CBD Belapur, Navi Mumbai',
-    manager: 'Site Manager 3',
-    managerId: 'sm-3',
-    managerEmail: 'sitemanager3@vyasgroup.com',
-    managerPassword: 'site123password',
-    startDate: '2026-08-01',
-    status: 'planning',
-  },
-  {
-    id: 'proj-pqr',
-    name: 'PQR Project',
-    location: 'Plot 45, Tech Park Corridor, Pune',
-    manager: 'Site Manager 5',
-    managerId: 'sm-pqr',
-    managerEmail: 'ganeshnagargoje.syncai@gmail.com',
-    managerPassword: 'site123password',
-    startDate: '2026-07-29',
-    status: 'ongoing',
-  }
 ];
 
 export const INITIAL_QUERIES: SiteQuery[] = [
@@ -265,8 +221,6 @@ INITIAL_PROJECTS.forEach((proj, pIdx) => {
     let stock = 0;
     if (proj.id === 'proj-1') stock = temp.stockProj1;
     else if (proj.id === 'proj-2') stock = temp.stockProj2;
-    else if (proj.id === 'proj-3') stock = temp.stockProj3;
-    else if (proj.id === 'proj-pqr') stock = temp.stockProj1 || 20;
 
     // Determine GST vs URD
     const isUrd = ['003', '004'].includes(temp.materialCode) && (temp.name.includes('SAND') || temp.name.includes('SANLA') || temp.name.includes('BRICKS') || temp.name.includes('AGGREGATE'));
@@ -537,25 +491,6 @@ export const INITIAL_TRANSACTIONS: InventoryTransaction[] = [
     notes: 'External plastering mortar preparation',
     operator: 'Rajesh Sharma',
   },
-  {
-    id: 'tx-305',
-    projectId: 'proj-pqr',
-    materialId: 'mat-proj-pqr-1', // TMT STEEL BARS
-    type: 'addition',
-    quantity: 12.0,
-    rate: 58000,
-    baseAmount: 696000,
-    gstRate: 18,
-    gstAmount: 125280,
-    totalPrice: 821280,
-    billType: 'GST',
-    billNumber: 'GST-2026/0305',
-    vendorName: 'Tata Tiscon Authorized Distributor',
-    vendorGstin: '27AAACT2941Q1ZX',
-    date: '2026-07-27',
-    notes: 'Initial steel stock arrival for PQR site foundation (GST Tax Invoice)',
-    operator: 'Pranav Kulkarni',
-  },
 
   // Monthly & Quarterly Historical Records (June & May 2026)
   {
@@ -725,32 +660,6 @@ export const INITIAL_CONTRACTORS: ContractorRecord[] = [
     createdAt: '2026-04-01',
   },
   {
-    id: 'contractor-3',
-    firmName: 'FlowTech Plumbing & Sanitation',
-    category: 'Plumbing & Sanitation',
-    projectId: 'proj-pqr',
-    projectName: 'PQR Project',
-    contactPerson: 'Arvind Mehta',
-    phone: '+91 99880 12345',
-    email: 'arvind@flowtech.in',
-    totalEstimatedBilling: 9500000, // 95 Lakhs
-    pastBilling: 4000000, // 40 Lakhs
-    currentBilling: 1500000, // 15 Lakhs
-    currentBillingStatus: 'Submitted',
-    statusReason: 'Submitted by site supervisor on 28th July',
-    pastBills: [
-      {
-        id: 'bill-301',
-        billNumber: 'FTP-BILL-01',
-        date: '2026-06-01',
-        amount: 4000000,
-        status: 'Paid',
-        notes: 'Underground drainage & stormwater line laying',
-      },
-    ],
-    createdAt: '2026-05-10',
-  },
-  {
     id: 'contractor-4',
     firmName: 'Mahavir Steel & Heavy Structures',
     category: 'Steel & Structural',
@@ -784,32 +693,6 @@ export const INITIAL_CONTRACTORS: ContractorRecord[] = [
     ],
     createdAt: '2026-03-01',
   },
-  {
-    id: 'contractor-5',
-    firmName: 'Royale Interior & Gypsum Finishes',
-    category: 'Interior & Finishing',
-    projectId: 'proj-3',
-    projectName: 'Apex Commercial Plaza',
-    contactPerson: 'Sanjay Dutt',
-    phone: '+91 97654 32109',
-    email: 'sanjay@royaleinteriors.com',
-    totalEstimatedBilling: 14000000, // 1.4 Cr
-    pastBilling: 5000000, // 50 Lakhs
-    currentBilling: 2000000, // 20 Lakhs
-    currentBillingStatus: 'Payment Processing',
-    statusReason: 'Finance department approved cheque processing',
-    pastBills: [
-      {
-        id: 'bill-501',
-        billNumber: 'RI-BILL-01',
-        date: '2026-06-12',
-        amount: 5000000,
-        status: 'Paid',
-        notes: 'Commercial lobby gypsum ceiling framework',
-      },
-    ],
-    createdAt: '2026-05-01',
-  },
 ];
 
 export const INITIAL_TRANSFERS: InternalTransferRecord[] = [
@@ -833,69 +716,6 @@ export const INITIAL_TRANSFERS: InternalTransferRecord[] = [
     photoFileName: 'cement_delivery_challan.jpg',
     photoUrl: 'https://images.unsplash.com/photo-1589939705384-5185137a7f0f?auto=format&fit=crop&w=800&q=80',
     createdAt: '2026-07-28',
-  },
-  {
-    id: 'itrans-2',
-    materialName: '16mm Fe550 TMT Rebar Steel',
-    category: 'Steel & Metals',
-    outwardProjectId: 'proj-2',
-    outwardProjectName: 'Grand Horizon Residency',
-    inwardProjectId: 'proj-pqr',
-    inwardProjectName: 'PQR Project',
-    quantity: 5,
-    unit: 'Ton',
-    rate: 62000,
-    amount: 310000, // 5 * 62000
-    status: 'In Transit',
-    transferDate: '2026-07-31',
-    vehicleNumber: 'MH-14-CW-9012',
-    driverName: 'Ramesh Pawar',
-    notes: 'Inter-site steel load shift via flatbed trailer',
-    photoFileName: 'steel_trailer_loading.jpg',
-    photoUrl: 'https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=800&q=80',
-    createdAt: '2026-07-31',
-  },
-  {
-    id: 'itrans-3',
-    materialName: 'Crushed Coarse Aggregate 20mm',
-    category: 'Aggregates & Sand',
-    outwardProjectId: 'proj-3',
-    outwardProjectName: 'Apex Commercial Plaza',
-    inwardProjectId: 'proj-1',
-    inwardProjectName: 'Lotus Heights (Tower A)',
-    quantity: 25,
-    unit: 'Brass / Ton',
-    rate: 2400,
-    amount: 60000, // 25 * 2400
-    status: 'Dispatched',
-    transferDate: '2026-08-01',
-    vehicleNumber: 'MH-04-EK-1122',
-    driverName: 'Dilip Sawant',
-    notes: 'Dump truck dispatch from Apex Plaza excess stock pile',
-    photoFileName: 'aggregate_dump_truck.jpg',
-    photoUrl: 'https://images.unsplash.com/photo-1541888946425-d0fbb186a5b3?auto=format&fit=crop&w=800&q=80',
-    createdAt: '2026-08-01',
-  },
-  {
-    id: 'itrans-4',
-    materialName: 'AAC Concrete Blocks (600x200x150mm)',
-    category: 'Masonry & Bricks',
-    outwardProjectId: 'proj-pqr',
-    outwardProjectName: 'PQR Project',
-    inwardProjectId: 'proj-3',
-    inwardProjectName: 'Apex Commercial Plaza',
-    quantity: 800,
-    unit: 'Nos.',
-    rate: 65,
-    amount: 52000, // 800 * 65
-    status: 'Rejected / Issue',
-    transferDate: '2026-07-25',
-    vehicleNumber: 'MH-12-ST-3344',
-    driverName: 'Mahesh Jadhav',
-    notes: 'Partial edge chipping during transit transit unloading; 120 blocks rejected at gate',
-    photoFileName: 'chipped_aac_blocks.jpg',
-    photoUrl: 'https://images.unsplash.com/photo-1590069261209-f8e9b8642343?auto=format&fit=crop&w=800&q=80',
-    createdAt: '2026-07-25',
   },
 ];
 
