@@ -1456,7 +1456,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors duration-250 font-sans pb-12">
+    <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors duration-250 font-sans">
       {/* Dynamic Glassmorphism Banner Header */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 py-3.5 px-4 sm:px-8 shadow-xs">
 
@@ -2043,8 +2043,10 @@ export default function App() {
       />
 
       {/* Footer System Lines */}
-      <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-16 pt-8 border-t border-slate-200 dark:border-slate-800 text-center text-[11px] font-medium text-slate-400 dark:text-slate-600">
-        <p>© 2026 PRAVAH Workspace. Hand-engineered for site operations, materials budgeting, and physical stocks recording.</p>
+      <footer className="w-full max-w-[1750px] mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+        <div className="py-4 border-t border-slate-200 dark:border-slate-800 text-center text-[11px] font-medium text-slate-400 dark:text-slate-600">
+          <p>© 2026 PRAVAH Workspace. Hand-engineered for site operations, materials budgeting, and physical stocks recording.</p>
+        </div>
       </footer>
 
       {/* Floating AI Assistant Chatbot at bottom-right corner with full application context */}
