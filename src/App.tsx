@@ -52,12 +52,24 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+// Browser keys for the signed-in session and the open tab (restored on refresh)
+const SESSION_KEY = 'builder_logged_in';
+const TAB_KEY = 'builder_active_tab';
+const APP_TABS = ['catalog', 'order-queries', 'procurement', 'transfer', 'gst-urd', 'codes', 'ledger', 'analytics', 'queries', 'admin'] as const;
+type AppTab = (typeof APP_TABS)[number];
+
 export default function App() {
   // Theme state is strictly set to light theme as requested
   const [darkMode] = useState<boolean>(false);
 
-  // Authentication Lock state: Application redirects to login page by default
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+  // Signed-in session survives a page refresh; the login page shows only until the user signs in or after logout
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SESSION_KEY) === '1' && !!localStorage.getItem('builder_current_user');
+    } catch {
+      return false;
+    }
+  });
 
   // MongoDB live database status
   const [isLiveDatabase, setIsLiveDatabase] = useState<boolean>(false);
@@ -113,7 +125,13 @@ export default function App() {
   const [isQuoteModalOpen, setIsQuoteModalOpen] = useState<boolean>(false);
   const [quoteModalPR, setQuoteModalPR] = useState<ProjectRequirement | null>(null);
 
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('proj-1');
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('builder_selected_project') || 'proj-1';
+    } catch {
+      return 'proj-1';
+    }
+  });
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const saved = localStorage.getItem('builder_current_user');
@@ -231,7 +249,32 @@ export default function App() {
     localStorage.setItem('builder_current_user', JSON.stringify(currentUser));
   }, [currentUser]);
 
-  const [activeTab, setActiveTab] = useState<'catalog' | 'order-queries' | 'procurement' | 'transfer' | 'gst-urd' | 'codes' | 'ledger' | 'analytics' | 'queries' | 'admin'>('catalog');
+  useEffect(() => {
+    try {
+      if (isLoggedIn) localStorage.setItem(SESSION_KEY, '1');
+      else localStorage.removeItem(SESSION_KEY);
+    } catch {
+      // storage unavailable (private mode): the session lasts until the page is closed
+    }
+  }, [isLoggedIn]);
+
+  const [activeTab, setActiveTab] = useState<AppTab>(() => {
+    try {
+      const saved = localStorage.getItem(TAB_KEY) as AppTab | null;
+      return saved && APP_TABS.includes(saved) ? saved : 'catalog';
+    } catch {
+      return 'catalog';
+    }
+  });
+
+  // A refresh reopens the tab the user was on
+  useEffect(() => {
+    try {
+      localStorage.setItem(TAB_KEY, activeTab);
+    } catch {
+      // ignore
+    }
+  }, [activeTab]);
 
   // Pick up new vendor quotes as soon as the procurement view is opened
   useEffect(() => {
@@ -1397,6 +1440,7 @@ export default function App() {
           if (user.assignedProjectId) {
             setSelectedProjectId(user.assignedProjectId);
           }
+          setActiveTab('catalog');
           setIsLoggedIn(true);
         }}
         onRegisterAdmin={(newAdminData) => {
@@ -1404,6 +1448,7 @@ export default function App() {
           const newAdminUser: User = { id, ...newAdminData };
           setUsers((prev) => [...prev, newAdminUser]);
           setCurrentUser(newAdminUser);
+          setActiveTab('catalog');
           setIsLoggedIn(true);
         }}
       />
