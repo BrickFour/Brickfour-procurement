@@ -5,7 +5,7 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 60,
-      "includeFiles": "{public/vyas-logo.png,node_modules/pdfkit/js/data/**}"
+      "includeFiles": "{public/brickfour-logo.jpeg,node_modules/pdfkit/js/data/**}"
     }
   },
   "rewrites": [

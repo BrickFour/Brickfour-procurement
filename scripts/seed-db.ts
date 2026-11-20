@@ -51,6 +51,7 @@ async function main() {
 
     for (const { name, keyField, docs } of SEED) {
       if (!existing.has(name)) await db.createCollection(name);
+      existing.add(name);
       const col = db.collection(name);
       await col.createIndex({ [keyField]: 1 }, { name: `${keyField}_lookup` });
 
@@ -64,6 +65,41 @@ async function main() {
       const clean = docs.map(({ _id, ...doc }: any) => JSON.parse(JSON.stringify(doc)));
       if (clean.length > 0) await col.insertMany(clean, { ordered: true });
       console.log(`  ${name.padEnd(24)} inserted ${clean.length} documents`);
+    }
+
+    // Support collections the server writes to (no initial data, only structure + indexes)
+    const SUPPORT: { name: string; indexes: { key: Record<string, 1 | -1>; options: Record<string, any> }[] }[] = [
+      {
+        name: 'purchase_orders',
+        indexes: [
+          { key: { poNumber: 1 }, options: { name: 'po_number', unique: true } },
+          { key: { prId: 1 }, options: { name: 'one_issued_po_per_pr', unique: true, partialFilterExpression: { status: 'Issued' } } },
+        ],
+      },
+      {
+        name: 'quote_attachments',
+        indexes: [
+          { key: { id: 1 }, options: { name: 'id_lookup', unique: true } },
+          { key: { prId: 1, vendorId: 1 }, options: { name: 'pr_vendor' } },
+        ],
+      },
+      {
+        name: 'notifications',
+        indexes: [
+          { key: { id: 1 }, options: { name: 'id_lookup', unique: true } },
+          { key: { createdAt: -1 }, options: { name: 'newest_first' } },
+        ],
+      },
+      { name: 'po_documents', indexes: [{ key: { id: 1, poNumber: 1 }, options: { name: 'id_po' } }] },
+      { name: 'rate_predictions', indexes: [{ key: { key: 1 }, options: { name: 'key_lookup' } }] },
+      { name: 'counters', indexes: [] },
+      { name: 'app_meta', indexes: [] },
+    ];
+    for (const { name, indexes } of SUPPORT) {
+      const created = !existing.has(name);
+      if (created) await db.createCollection(name);
+      for (const { key, options } of indexes) await db.collection(name).createIndex(key, options);
+      console.log(`  ${name.padEnd(24)} ${created ? 'created' : 'exists'} (${indexes.length} indexes)`);
     }
 
     await db

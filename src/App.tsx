@@ -34,7 +34,7 @@ import LoginPage from './components/LoginPage';
 import AdminProjectManager from './components/AdminProjectManager';
 import FloatingChatbot from './components/FloatingChatbot';
 import { loadAppStateFromMongo, syncCollection, fetchServerUpdates, mergeServerDocs } from './services/mongoDataService';
-import vyasLogo from './images/vyas logo.png';
+const brandLogo = '/brickfour-logo.jpeg';
 import {
   BookOpen,
   History,
@@ -1464,7 +1464,7 @@ export default function App() {
           
           {/* Logo & Headline */}
           <div className="flex items-center gap-3">
-            <img src={vyasLogo} alt="Vyas Group logo" className="h-10 sm:h-12 w-auto object-contain shrink-0" />
+            <img src={brandLogo} alt="Brickfour logo" className="h-10 sm:h-12 w-auto object-contain shrink-0" />
             <div>
               <h1 className="text-xl font-logo uppercase tracking-tight">
                 <span className="text-indigo-900">PRAVAH</span>

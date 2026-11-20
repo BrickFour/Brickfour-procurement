@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import vyasLogo from '../images/vyas logo.png';
+const brandLogo = '/brickfour-logo.jpeg';
 import {
   Type,
   FileText,
@@ -483,7 +483,7 @@ export default function VendorQuotePortal() {
     <header className="bg-[#13294b]">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
         <div className="bg-white rounded-lg px-3 py-2 shadow-sm">
-          <img src={vyasLogo} alt="Vyas" className="h-11 w-auto object-contain" />
+          <img src={brandLogo} alt="Brickfour" className="h-11 w-auto object-contain" />
         </div>
         <span className="text-sm font-medium text-slate-200">Secure supplier portal</span>
       </div>

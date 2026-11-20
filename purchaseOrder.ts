@@ -106,7 +106,7 @@ export function gstLines(taxable: { amount: number; rate: number }[], companySta
 }
 
 export function findLogoPath(): string | undefined {
-  const candidates = [path.join(process.cwd(), 'dist', 'vyas-logo.png'), path.join(process.cwd(), 'public', 'vyas-logo.png')];
+  const candidates = [path.join(process.cwd(), 'dist', 'brickfour-logo.jpeg'), path.join(process.cwd(), 'public', 'brickfour-logo.jpeg')];
   return candidates.find((p) => fs.existsSync(p));
 }
 

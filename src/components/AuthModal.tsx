@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import vyasLogo from '../images/vyas logo.png';
+const brandLogo = '/brickfour-logo.jpeg';
 import { User, Project } from '../types';
 import { ShieldCheck, HardHat, UserPlus, X, LogIn, CheckCircle2, Building2, KeyRound, Mail, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -215,8 +215,8 @@ export default function AuthModal({
         <div className="flex items-center justify-between pb-4 border-b border-slate-200">
           <div className="flex items-center gap-3">
             <img
-              src={vyasLogo}
-              alt="Vyas Group logo"
+              src={brandLogo}
+              alt="Brickfour logo"
               className="h-10 w-auto object-contain shrink-0"
             />
             <div>

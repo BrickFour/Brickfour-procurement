@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { User, Project } from '../types';
-import vyasLogo from '../images/vyas logo.png';
+const brandLogo = '/brickfour-logo.jpeg';
 import {
   LogIn,
   KeyRound,
@@ -202,8 +202,8 @@ export default function LoginPage({
       <header className="w-full max-w-5xl flex items-center justify-between pt-2 pb-6 border-b border-slate-200">
         <div className="flex items-center gap-3">
           <img
-            src={vyasLogo}
-            alt="Vyas Group logo"
+            src={brandLogo}
+            alt="Brickfour logo"
             className="h-10 sm:h-12 w-auto object-contain"
           />
           <div className="hidden sm:block border-l border-slate-200 pl-3 py-0.5">
@@ -232,8 +232,8 @@ export default function LoginPage({
           <div className="text-center mb-6 pt-2">
             <div className="flex items-center justify-center mb-3">
               <img
-                src={vyasLogo}
-                alt="Vyas Group logo"
+                src={brandLogo}
+                alt="Brickfour logo"
                 className="h-12 sm:h-14 w-auto object-contain"
               />
             </div>
