@@ -582,174 +582,157 @@ export default function MaterialRateGraphModal({
 
   if (!isOpen || !material) return null;
 
+  const NAVY = '#23408e';
+  const NAVY_LIGHT = '#6f8fd8';
+  const axisTick = { fill: '#64748b', fontSize: 11, fontWeight: 600 };
+  const rupeeTick = (v: number) => `Rs.${v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`;
+  const tabBtn = (active: boolean) =>
+    `px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+      active ? 'bg-[#23408e] text-white shadow-xs' : 'text-slate-600 hover:text-[#23408e] hover:bg-white'
+    }`;
+  const metricCard = 'bg-white rounded-xl border border-slate-200 px-3.5 py-3 flex flex-col justify-between min-w-0';
+  const metricLabel = 'text-[11px] font-semibold uppercase tracking-wide text-slate-500 flex items-center gap-1.5 truncate';
+
   return (
-    <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" id="material-rate-modal shadow-2xl">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" id="material-rate-modal">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+        initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 10 }}
-        className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]"
+        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+        className="bg-white w-full max-w-5xl rounded-xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] text-slate-900"
       >
-        {/* Modal Top Navigation Bar - Compact Sleek Design */}
-        <div className="bg-slate-950 text-white px-4 py-2.5 flex items-center justify-between border-b border-slate-800">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="p-1.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg shrink-0">
-              <TrendingUp size={16} />
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 px-5 sm:px-6 py-4 bg-[#23408e] text-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-lg bg-white/15 text-white flex items-center justify-center shrink-0">
+              <TrendingUp size={20} />
             </div>
             <div className="min-w-0">
-              <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
-                <span>{material.name}</span>
-                <span className="text-xs font-normal text-slate-400">({material.unit})</span>
-                <span className="text-[11px] text-slate-400 font-medium ml-1 hidden sm:inline">📍 {projectName}</span>
-              </h2>
-              <p className="text-[10px] text-slate-400 sm:hidden">📍 {projectName}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base sm:text-lg font-bold text-white truncate">{material.name}</h2>
+                <span className="px-2 py-0.5 rounded-full bg-white/15 text-white text-[11px] font-semibold border border-white/20">
+                  {material.unit}
+                </span>
+              </div>
+              <p className="text-xs text-blue-100 truncate">Rate analytics · {projectName}</p>
             </div>
           </div>
-
           <button
             id="close-rate-graph-modal"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0 ml-2"
+            aria-label="Close"
+            className="p-2 text-blue-100 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
           >
-            <X size={18} />
+            <X size={20} />
           </button>
         </div>
 
-        {/* Compact Key Metrics Header */}
-        <div className="bg-slate-900 text-slate-100 px-4 py-2 border-b border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {/* Current Rate */}
-          <div className="bg-slate-800/60 px-2.5 py-1.5 rounded-lg border border-slate-700/50 flex flex-col justify-between">
-            <p className="text-[9px] font-bold uppercase tracking-tight text-slate-400 flex items-center gap-1 truncate">
-              <DollarSign size={10} className="text-emerald-400 shrink-0" /> {isEstimated ? 'Current Rate' : 'Current Bought Rate'}
-            </p>
-            <p className="text-xs sm:text-sm font-black text-white mt-0.5 truncate">
-              {noRate ? 'Not purchased yet' : <>Rs. {currentRate.toLocaleString('en-IN')}{' '}
-              <span className="text-[10px] font-normal text-slate-400">/{material.unit}</span></>}
-            </p>
-            <div className="flex items-center justify-between text-[9px] text-slate-400 font-medium truncate mt-0.5">
-              <span className="truncate">Vendor: <span className="text-slate-300">{latestPt.vendorName || material.vendorName || '—'}</span></span>
-              {latestPt.sourceUrl && (
-                <a
-                  href={latestPt.sourceUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sky-400 hover:text-sky-300 font-bold inline-flex items-center gap-0.5 shrink-0 ml-1"
-                  title={latestPt.sourceTitle || 'View verified market source link'}
-                >
-                  <ExternalLink size={9} /> Source
-                </a>
-              )}
-            </div>
-          </div>
-
-          {/* Rate Trend / Return */}
-          <div className="bg-slate-800/60 px-2.5 py-1.5 rounded-lg border border-slate-700/50 flex flex-col justify-between">
-            <p className="text-[9px] font-bold uppercase tracking-tight text-slate-400 truncate">
-              Price Trend (Overall)
-            </p>
-            <div className="flex items-center gap-1 mt-0.5">
-              <span
-                className={`inline-flex items-center gap-0.5 text-[11px] font-bold px-1.5 py-0.2 rounded ${
-                  isUp ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
-                }`}
-              >
-                {isUp ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                {isEstimated ? 'No purchases yet' : <>{isUp ? '+' : ''}Rs. {Math.abs(priceDiff).toLocaleString('en-IN')} ({isUp ? '+' : ''}{percentChange.toFixed(1)}%)</>}
-              </span>
-            </div>
-            <p className="text-[9px] text-slate-400 font-medium truncate mt-0.5">
-              {isEstimated ? 'Trend starts with your first purchase' : <>From Rs. {initialRate.toLocaleString('en-IN')}{firstPt.date ? ` on ${formatDateFull(firstPt.date)}` : ''}</>}
-            </p>
-          </div>
-
-          {/* High / Low Range */}
-          <div className="bg-slate-800/60 px-2.5 py-1.5 rounded-lg border border-slate-700/50 flex flex-col justify-between">
-            <p className="text-[9px] font-bold uppercase tracking-tight text-slate-400 truncate">
-              High / Low Range
-            </p>
-            <div className="text-[10px] font-bold mt-0.5 space-y-0.5">
-              <div className="flex items-center justify-between text-emerald-400">
-                <span>High:</span> <span>Rs. {highestRate.toLocaleString('en-IN')}</span>
-              </div>
-              <div className="flex items-center justify-between text-red-400">
-                <span>Low:</span> <span>Rs. {lowestRate.toLocaleString('en-IN')}</span>
+        {/* Body */}
+        <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1 bg-slate-50">
+          {/* Key figures */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className={metricCard}>
+              <p className={metricLabel}>
+                <DollarSign size={13} className="text-[#23408e] shrink-0" /> {isEstimated ? 'Current Rate' : 'Current Bought Rate'}
+              </p>
+              <p className="text-base sm:text-lg font-bold text-slate-900 mt-1 truncate">
+                {noRate ? 'Not purchased yet' : <>Rs. {currentRate.toLocaleString('en-IN')}{' '}
+                <span className="text-xs font-medium text-slate-500">/{material.unit}</span></>}
+              </p>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 truncate mt-1">
+                <span className="truncate">Vendor: <span className="text-slate-700 font-medium">{latestPt.vendorName || material.vendorName || '—'}</span></span>
+                {latestPt.sourceUrl && (
+                  <a
+                    href={latestPt.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#23408e] hover:underline font-semibold inline-flex items-center gap-0.5 shrink-0 ml-1"
+                    title={latestPt.sourceTitle || 'View verified market source link'}
+                  >
+                    <ExternalLink size={10} /> Source
+                  </a>
+                )}
               </div>
             </div>
-          </div>
 
-          {/* Total On-Site Asset Value */}
-          <div className="bg-slate-800/60 px-2.5 py-1.5 rounded-lg border border-slate-700/50 flex flex-col justify-between">
-            <p className="text-[9px] font-bold uppercase tracking-tight text-slate-400 truncate">
-              On-Site Stock Value
-            </p>
-            <p className="text-xs sm:text-sm font-black text-amber-400 mt-0.5 truncate">
-              Rs. {totalStockValue.toLocaleString('en-IN')}
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium truncate mt-0.5">
-              Stock: <strong className="text-slate-200">{material.currentStock} {material.unit}</strong>
-              {!isEstimated && <> @ avg Rs. {avgCost.toLocaleString('en-IN')}</>}
-            </p>
-          </div>
-        </div>
-
-        {/* Main Content Area */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-5 flex-1 bg-slate-50">
-          {/* Main Chart Card */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3">
-            {/* Header with Tabs & Actions */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-              <div className="space-y-1">
-                <h3 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-                  {activeGraphTab === 'future' ? (
-                    <>
-                      <BrainCircuit size={17} className="text-purple-600" />
-                      <span>AI FUTURE RATE PREDICTION GRAPH (MARKET SEARCH ENGINE)</span>
-                    </>
-                  ) : activeGraphTab === 'dual' ? (
-                    <>
-                      <Layers size={17} className="text-indigo-600" />
-                      <span>Dual Horizon Analysis: Historical Purchases vs 3-Year Future Forecast</span>
-                    </>
-                  ) : (
-                    <>
-                      <TrendingUp size={17} className="text-amber-600" />
-                      <span>Rate vs Period Graph (User Procurement History)</span>
-                    </>
-                  )}
-                </h3>
-              </div>
-
-              {/* Action Buttons & Tabs */}
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                {/* Graph View Tabs */}
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setActiveGraphTab('historical')}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeGraphTab === 'historical'
-                        ? 'bg-white text-slate-950 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
+            <div className={metricCard}>
+              <p className={metricLabel}>Price Trend (Overall)</p>
+              <div className="mt-1">
+                {isEstimated ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-slate-100 text-slate-600 border-slate-200">
+                    <TrendingUp size={12} /> No purchases yet
+                  </span>
+                ) : (
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-semibold ${
+                      isUp ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'
                     }`}
                   >
+                    {isUp ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+                    {isUp ? '+' : ''}Rs. {Math.abs(priceDiff).toLocaleString('en-IN')} ({isUp ? '+' : ''}{percentChange.toFixed(1)}%)
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 truncate mt-1">
+                {isEstimated ? 'Trend starts with your first purchase' : <>From Rs. {initialRate.toLocaleString('en-IN')}{firstPt.date ? ` on ${formatDateFull(firstPt.date)}` : ''}</>}
+              </p>
+            </div>
+
+            <div className={metricCard}>
+              <p className={metricLabel}>High / Low Range</p>
+              <div className="text-xs font-semibold mt-1 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500">High</span> <span className="text-emerald-700">Rs. {highestRate.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500">Low</span> <span className="text-rose-700">Rs. {lowestRate.toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className={metricCard}>
+              <p className={metricLabel}>On-Site Stock Value</p>
+              <p className="text-base sm:text-lg font-bold text-[#23408e] mt-1 truncate">
+                Rs. {totalStockValue.toLocaleString('en-IN')}
+              </p>
+              <p className="text-[11px] text-slate-500 truncate mt-1">
+                Stock: <strong className="text-slate-700 font-semibold">{material.currentStock} {material.unit}</strong>
+                {!isEstimated && <> @ avg Rs. {avgCost.toLocaleString('en-IN')}</>}
+              </p>
+            </div>
+          </div>
+
+          {/* Chart card */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 sm:px-5 py-3.5 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-[#eaf0fb] text-[#23408e] flex items-center justify-center shrink-0">
+                  {activeGraphTab === 'future' ? <BrainCircuit size={15} /> : activeGraphTab === 'dual' ? <Layers size={15} /> : <TrendingUp size={15} />}
+                </span>
+                <span>
+                  {activeGraphTab === 'future'
+                    ? 'AI Future Rate Prediction (Market Search)'
+                    : activeGraphTab === 'dual'
+                    ? 'Dual View: Historical Purchases vs 3-Year Forecast'
+                    : 'Rate vs Period (Procurement History)'}
+                </span>
+              </h3>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+                  <button type="button" onClick={() => setActiveGraphTab('historical')} className={tabBtn(activeGraphTab === 'historical')}>
                     Historical Graph
                   </button>
-
                   <button
                     type="button"
                     onClick={() => {
                       setActiveGraphTab('future');
                       if (!activePredictionData && !isPredicting) handlePredictFutureRates(false, true);
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                      activeGraphTab === 'future'
-                        ? 'bg-purple-600 text-white shadow-xs'
-                        : 'text-purple-700 hover:text-purple-900'
-                    }`}
+                    className={`${tabBtn(activeGraphTab === 'future')} flex items-center gap-1`}
                   >
                     Future Prediction
                   </button>
-
                   <button
                     type="button"
                     onClick={() => {
@@ -758,23 +741,18 @@ export default function MaterialRateGraphModal({
                       }
                       setActiveGraphTab('dual');
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer hidden sm:inline-flex items-center gap-1 ${
-                      activeGraphTab === 'dual'
-                        ? 'bg-slate-950 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    className={`${tabBtn(activeGraphTab === 'dual')} hidden sm:inline-flex items-center gap-1`}
                   >
                     Dual View
                   </button>
                 </div>
 
-                {/* Predict Button */}
                 <button
                   id="btn-predict-future"
                   type="button"
                   onClick={() => handlePredictFutureRates(true, true)}
                   disabled={isPredicting || noRate}
-                  className="flex items-center justify-center gap-1.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-600 text-white text-xs font-black px-3 py-1.5 rounded-xl cursor-pointer transition-all shadow-xs disabled:opacity-60"
+                  className="flex items-center justify-center gap-1.5 bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold px-3.5 py-2 rounded-lg cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Predict material rate for 1M, 3M, 6M, 1Y, 2Y, 3Y using live market search"
                 >
                   {isPredicting ? (
@@ -792,287 +770,241 @@ export default function MaterialRateGraphModal({
               </div>
             </div>
 
-            {/* Error notifications if any */}
-            <AnimatePresence>
-              {predictionError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-xl text-xs flex items-center justify-between"
-                >
-                  <span>ℹ️ {predictionError}</span>
-                  <button type="button" onClick={() => setPredictionError(null)} className="text-amber-600 hover:text-amber-800">
-                    <X size={14} />
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Not purchased and no rate: nothing to plot or predict */}
-            {noRate && (
-              <div id="rate-graph-not-purchased" className="h-56 flex flex-col items-center justify-center text-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50">
-                <TrendingUp size={28} className="text-slate-300" />
-                <p className="text-sm font-semibold text-slate-800">You have not purchased this material yet.</p>
-                <p className="text-xs text-slate-500 max-w-sm">The rate graph and the future prediction start with the first purchase (or a rate entered when the material is added or uploaded).</p>
-              </div>
-            )}
-
-            {/* CHART VIEW 1: Historical Bought Values Graph (Default) */}
-            {!noRate && activeGraphTab === 'historical' && (
-              <div className="h-64 sm:h-72 w-full pt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={historicalChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
-                    <defs>
-                      <linearGradient id="rateGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={isUp ? '#10b981' : '#f43f5e'} stopOpacity={0.25} />
-                        <stop offset="95%" stopColor={isUp ? '#10b981' : '#f43f5e'} stopOpacity={0.0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                    <XAxis
-                      dataKey="displayDate"
-                      tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }}
-                      axisLine={{ stroke: '#cbd5e1' }}
-                      tickLine={false}
-                      dy={10}
-                    />
-                    <YAxis
-                      tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }}
-                      axisLine={{ stroke: '#cbd5e1' }}
-                      tickLine={false}
-                      tickFormatter={(v) => `Rs.${v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`}
-                      domain={['auto', 'auto']}
-                    />
-                    <Tooltip
-                      content={({ active, payload }) => {
-                        if (active && payload && payload.length) {
-                          const data = payload[0].payload as RateHistoryPoint & {
-                            displayDate: string;
-                            fullDateStr: string;
-                          };
-                          return (
-                            <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl border border-slate-700 text-xs space-y-1">
-                              <p className="text-[10px] font-black text-amber-400 uppercase tracking-wider">
-                                📅 {data.fullDateStr} ({data.displayDate})
-                              </p>
-                              <p className="text-sm font-black text-white">
-                                {isEstimated ? 'Current Rate' : 'Bought Rate'}: Rs. {data.rate.toLocaleString('en-IN')} / {material.unit}
-                              </p>
-                              {!isEstimated && (
-                                <p className="text-[10px] text-slate-400">excl. GST, incl. freight &amp; loading</p>
-                              )}
-                              {data.billNumber && !isEstimated && (
-                                <p className="text-[11px] text-slate-300 font-semibold">Invoice: {data.billNumber}</p>
-                              )}
-                              {data.vendorName && (
-                                <p className="text-[11px] text-slate-300 font-semibold">
-                                  Vendor: {data.vendorName}
-                                </p>
-                              )}
-                              {data.quantity && (
-                                <p className="text-[11px] text-slate-300 font-semibold">
-                                  Qty: {data.quantity} {material.unit} | Total: Rs.{' '}
-                                  {(data.totalPrice || data.rate * data.quantity).toLocaleString('en-IN')}
-                                </p>
-                              )}
-                              {data.notes && (
-                                <p className="text-[10px] text-slate-400 italic mt-1">{data.notes}</p>
-                              )}
-                            </div>
-                          );
-                        }
-                        return null;
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="rateVal"
-                      stroke={isUp ? '#059669' : '#e11d48'}
-                      strokeWidth={3}
-                      fillOpacity={1}
-                      fill="url(#rateGradient)"
-                      dot={{ r: 5, fill: isUp ? '#059669' : '#e11d48', strokeWidth: 2, stroke: '#ffffff' }}
-                      activeDot={{ r: 8, fill: '#f59e0b', strokeWidth: 3, stroke: '#ffffff' }}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {/* CHART VIEW 2: AI Future Rate Prediction Graph (Market Search Engine) */}
-            {!noRate && activeGraphTab === 'future' && (
-              <div className="space-y-4">
-                {!activePredictionData && !isPredicting ? (
-                  <div className="bg-purple-50/60 border border-purple-200 rounded-2xl p-8 text-center space-y-3">
-                    <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center mx-auto shadow-md">
-                      <BrainCircuit size={24} />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-black text-purple-950 uppercase tracking-wider">
-                        Generate 3-Year Future Rate Predictions with Market Search
-                      </h4>
-                      <p className="text-xs text-slate-600 max-w-md mx-auto mt-1">
-                        Search current Indian commodity indices, inflation rates, and infrastructure forecasts to project prices for <strong>Current, 1 Month, 3 Months, 6 Months, 1 Year, 2 Years, and 3 Years</strong>.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handlePredictFutureRates(true, true)}
-                      className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-black rounded-xl cursor-pointer shadow-md inline-flex items-center gap-2 transition-all"
-                    >
-                      Start Future Prediction
+            <div className="p-4 sm:p-5 space-y-3">
+              <AnimatePresence>
+                {predictionError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg text-xs flex items-center justify-between gap-2"
+                  >
+                    <span>{predictionError}</span>
+                    <button type="button" onClick={() => setPredictionError(null)} aria-label="Dismiss" className="text-amber-600 hover:text-amber-800 cursor-pointer">
+                      <X size={14} />
                     </button>
-                  </div>
-                ) : isPredicting ? (
-                  <div className="h-64 flex flex-col items-center justify-center space-y-3 text-center">
-                    <Loader2 size={32} className="animate-spin text-purple-600" />
-                    <div>
-                      <p className="text-xs font-bold text-slate-900">
-                        Searching online commodity data & predicting price curves...
-                      </p>
-                      <p className="text-[11px] text-slate-500">
-                        Analyzing commodity indices for {material.name}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <p id="prediction-basis" className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full border font-semibold ${activePredictionData?.basis === 'web' ? 'bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                        {activePredictionData?.basis === 'web' ? 'Live market research (Gemini + Google Search)' : 'Projection from price trend'}
-                      </span>
-                      <span>
-                        {predictionSavedAt ? `Researched ${new Date(predictionSavedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} - saved; click Re-predict Rates for a new search.` : 'Not saved.'}
-                      </span>
-                      {activePredictionData?.growthNext12MonthsPct !== undefined && (
-                        <span>Next 12 months: {activePredictionData.growthNext12MonthsPct > 0 ? '+' : ''}{activePredictionData.growthNext12MonthsPct}%</span>
-                      )}
-                    </p>
-                    {activePredictionData?.macroSummary && (
-                      <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{activePredictionData.macroSummary}</p>
-                    )}
-                    {/* Prediction Area Chart without driver box */}
-                    <div className="h-64 sm:h-72 w-full pt-2">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={futureChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
-                          <defs>
-                            <linearGradient id="futurePredictionGradient" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.35} />
-                              <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                          <XAxis
-                            dataKey="displayPeriod"
-                            tick={{ fill: '#475569', fontSize: 10, fontWeight: 800 }}
-                            axisLine={{ stroke: '#cbd5e1' }}
-                            tickLine={false}
-                            dy={10}
-                          />
-                          <YAxis
-                            tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }}
-                            axisLine={{ stroke: '#cbd5e1' }}
-                            tickLine={false}
-                            tickFormatter={(v) => `Rs.${v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`}
-                            domain={['auto', 'auto']}
-                          />
-                          <Tooltip
-                            content={({ active, payload }) => {
-                              if (active && payload && payload.length) {
-                                const data = payload[0].payload;
-                                return (
-                                  <div className="bg-slate-950 text-white p-3 rounded-xl shadow-2xl border border-purple-500/50 text-xs space-y-1">
-                                    <div className="flex items-center justify-between border-b border-slate-800 pb-1 gap-2">
-                                      <span className="text-[10px] font-black text-purple-400 uppercase">
-                                        {data.displayPeriod} ({data.targetDate})
-                                      </span>
-                                      <span className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded ${
-                                        data.percentChangeVsCurrent > 0
-                                          ? 'bg-amber-400/20 text-amber-300'
-                                          : data.percentChangeVsCurrent < 0
-                                          ? 'bg-emerald-400/20 text-emerald-300'
-                                          : 'bg-slate-700 text-slate-300'
-                                      }`}>
-                                        {data.percentChangeVsCurrent > 0 ? '+' : ''}{data.percentChangeVsCurrent}% vs Today
-                                      </span>
-                                    </div>
-                                    <p className="text-sm font-black text-white">
-                                      Predicted Rate: Rs. {data.predictedRate.toLocaleString('en-IN')} / {material.unit}
-                                    </p>
-                                    <p className="text-[11px] text-slate-300">
-                                      Forecast Range: <strong>Rs. {data.minRate.toLocaleString('en-IN')} – {data.maxRate.toLocaleString('en-IN')}</strong>
-                                    </p>
-                                  </div>
-                                );
-                              }
-                              return null;
-                            }}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="predictedRate"
-                            stroke="#7c3aed"
-                            strokeWidth={3}
-                            fillOpacity={1}
-                            fill="url(#futurePredictionGradient)"
-                            dot={{ r: 5, fill: '#7c3aed', strokeWidth: 2, stroke: '#ffffff' }}
-                            activeDot={{ r: 8, fill: '#f59e0b', strokeWidth: 3, stroke: '#ffffff' }}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </>
+                  </motion.div>
                 )}
-              </div>
-            )}
+              </AnimatePresence>
 
-            {/* CHART VIEW 3: Dual View (Historical Purchases + Future Predictions) */}
-            {!noRate && activeGraphTab === 'dual' && (
-              <div className="space-y-3">
+              {noRate && (
+                <div id="rate-graph-not-purchased" className="h-56 flex flex-col items-center justify-center text-center gap-2 rounded-lg border border-dashed border-[#c9d6f2] bg-[#f5f8fd]">
+                  <TrendingUp size={28} className="text-[#9fb3e0]" />
+                  <p className="text-sm font-semibold text-slate-800">You have not purchased this material yet.</p>
+                  <p className="text-xs text-slate-500 max-w-sm">The rate graph and the future prediction start with the first purchase (or a rate entered when the material is added or uploaded).</p>
+                </div>
+              )}
+
+              {/* Historical graph */}
+              {!noRate && activeGraphTab === 'historical' && (
+                <div className="h-64 sm:h-72 w-full pt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={historicalChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                      <defs>
+                        <linearGradient id="rateGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={NAVY} stopOpacity={0.22} />
+                          <stop offset="95%" stopColor={NAVY} stopOpacity={0.0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                      <XAxis dataKey="displayDate" tick={axisTick} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} dy={10} />
+                      <YAxis tick={axisTick} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} tickFormatter={rupeeTick} domain={['auto', 'auto']} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload as RateHistoryPoint & {
+                              displayDate: string;
+                              fullDateStr: string;
+                            };
+                            return (
+                              <div className="bg-white text-slate-900 p-3 rounded-lg shadow-lg border border-slate-200 text-xs space-y-1">
+                                <p className="text-[11px] font-semibold text-[#23408e] uppercase tracking-wide">
+                                  {data.fullDateStr} ({data.displayDate})
+                                </p>
+                                <p className="text-sm font-bold text-slate-900">
+                                  {isEstimated ? 'Current Rate' : 'Bought Rate'}: Rs. {data.rate.toLocaleString('en-IN')} / {material.unit}
+                                </p>
+                                {!isEstimated && (
+                                  <p className="text-[11px] text-slate-500">excl. GST, incl. freight &amp; loading</p>
+                                )}
+                                {data.billNumber && !isEstimated && (
+                                  <p className="text-[11px] text-slate-700">Invoice: {data.billNumber}</p>
+                                )}
+                                {data.vendorName && (
+                                  <p className="text-[11px] text-slate-700">Vendor: {data.vendorName}</p>
+                                )}
+                                {data.quantity && (
+                                  <p className="text-[11px] text-slate-700">
+                                    Qty: {data.quantity} {material.unit} | Total: Rs.{' '}
+                                    {(data.totalPrice || data.rate * data.quantity).toLocaleString('en-IN')}
+                                  </p>
+                                )}
+                                {data.notes && (
+                                  <p className="text-[11px] text-slate-500 italic mt-1">{data.notes}</p>
+                                )}
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="rateVal"
+                        stroke={NAVY}
+                        strokeWidth={2.5}
+                        fillOpacity={1}
+                        fill="url(#rateGradient)"
+                        dot={{ r: 4.5, fill: NAVY, strokeWidth: 2, stroke: '#ffffff' }}
+                        activeDot={{ r: 7, fill: NAVY, strokeWidth: 3, stroke: '#ffffff' }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* Future prediction graph */}
+              {!noRate && activeGraphTab === 'future' && (
+                <div className="space-y-3">
+                  {!activePredictionData && !isPredicting ? (
+                    <div className="bg-[#f5f8fd] border border-[#c9d6f2] rounded-lg p-8 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-lg bg-[#23408e] text-white flex items-center justify-center mx-auto">
+                        <BrainCircuit size={24} />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">Generate 3-Year Future Rate Predictions with Market Search</h4>
+                        <p className="text-xs text-slate-600 max-w-md mx-auto mt-1">
+                          Search current Indian commodity indices, inflation rates, and infrastructure forecasts to project prices for <strong>Current, 1 Month, 3 Months, 6 Months, 1 Year, 2 Years, and 3 Years</strong>.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handlePredictFutureRates(true, true)}
+                        className="px-5 py-2.5 bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold rounded-lg cursor-pointer inline-flex items-center gap-2 transition-colors"
+                      >
+                        Start Future Prediction
+                      </button>
+                    </div>
+                  ) : isPredicting ? (
+                    <div className="h-64 flex flex-col items-center justify-center space-y-3 text-center">
+                      <Loader2 size={32} className="animate-spin text-[#23408e]" />
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Searching online commodity data & predicting price curves...</p>
+                        <p className="text-xs text-slate-500">Analyzing commodity indices for {material.name}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p id="prediction-basis" className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full border font-semibold ${activePredictionData?.basis === 'web' ? 'bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                          {activePredictionData?.basis === 'web' ? 'Live market research (Gemini + Google Search)' : 'Projection from price trend'}
+                        </span>
+                        <span>
+                          {predictionSavedAt ? `Researched ${new Date(predictionSavedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} - saved; click Re-predict Rates for a new search.` : 'Not saved.'}
+                        </span>
+                        {activePredictionData?.growthNext12MonthsPct !== undefined && (
+                          <span>Next 12 months: {activePredictionData.growthNext12MonthsPct > 0 ? '+' : ''}{activePredictionData.growthNext12MonthsPct}%</span>
+                        )}
+                      </p>
+                      {activePredictionData?.macroSummary && (
+                        <p className="text-xs text-slate-700 bg-[#f5f8fd] border border-[#d9e3f5] rounded-lg px-3 py-2">{activePredictionData.macroSummary}</p>
+                      )}
+                      <div className="h-64 sm:h-72 w-full pt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={futureChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                            <defs>
+                              <linearGradient id="futurePredictionGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={NAVY_LIGHT} stopOpacity={0.3} />
+                                <stop offset="95%" stopColor={NAVY_LIGHT} stopOpacity={0.0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                            <XAxis dataKey="displayPeriod" tick={axisTick} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} dy={10} />
+                            <YAxis tick={axisTick} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} tickFormatter={rupeeTick} domain={['auto', 'auto']} />
+                            <Tooltip
+                              content={({ active, payload }) => {
+                                if (active && payload && payload.length) {
+                                  const data = payload[0].payload;
+                                  return (
+                                    <div className="bg-white text-slate-900 p-3 rounded-lg shadow-lg border border-slate-200 text-xs space-y-1">
+                                      <div className="flex items-center justify-between border-b border-slate-100 pb-1 gap-2">
+                                        <span className="text-[11px] font-semibold text-[#23408e] uppercase tracking-wide">
+                                          {data.displayPeriod} ({data.targetDate})
+                                        </span>
+                                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${
+                                          data.percentChangeVsCurrent > 0
+                                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                            : data.percentChangeVsCurrent < 0
+                                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                            : 'bg-slate-100 text-slate-600 border-slate-200'
+                                        }`}>
+                                          {data.percentChangeVsCurrent > 0 ? '+' : ''}{data.percentChangeVsCurrent}% vs Today
+                                        </span>
+                                      </div>
+                                      <p className="text-sm font-bold text-slate-900">
+                                        Predicted Rate: Rs. {data.predictedRate.toLocaleString('en-IN')} / {material.unit}
+                                      </p>
+                                      <p className="text-[11px] text-slate-600">
+                                        Forecast Range: <strong>Rs. {data.minRate.toLocaleString('en-IN')} – {data.maxRate.toLocaleString('en-IN')}</strong>
+                                      </p>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="predictedRate"
+                              stroke={NAVY}
+                              strokeWidth={2.5}
+                              strokeDasharray="5 4"
+                              fillOpacity={1}
+                              fill="url(#futurePredictionGradient)"
+                              dot={{ r: 4.5, fill: NAVY_LIGHT, strokeWidth: 2, stroke: '#ffffff' }}
+                              activeDot={{ r: 7, fill: NAVY, strokeWidth: 3, stroke: '#ffffff' }}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Dual view */}
+              {!noRate && activeGraphTab === 'dual' && (
                 <div className="h-64 sm:h-72 w-full pt-2">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={dualChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
                       <defs>
                         <linearGradient id="dualHistoricalGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#059669" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="#059669" stopOpacity={0.0} />
+                          <stop offset="5%" stopColor={NAVY} stopOpacity={0.22} />
+                          <stop offset="95%" stopColor={NAVY} stopOpacity={0.0} />
                         </linearGradient>
                         <linearGradient id="dualFutureGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="#7c3aed" stopOpacity={0.0} />
+                          <stop offset="5%" stopColor={NAVY_LIGHT} stopOpacity={0.25} />
+                          <stop offset="95%" stopColor={NAVY_LIGHT} stopOpacity={0.0} />
                         </linearGradient>
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                      <XAxis
-                        dataKey="name"
-                        tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
-                        axisLine={{ stroke: '#cbd5e1' }}
-                        tickLine={false}
-                        dy={10}
-                      />
-                      <YAxis
-                        tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }}
-                        axisLine={{ stroke: '#cbd5e1' }}
-                        tickLine={false}
-                        tickFormatter={(v) => `Rs.${v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`}
-                        domain={['auto', 'auto']}
-                      />
+                      <XAxis dataKey="name" tick={{ ...axisTick, fontSize: 10 }} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} dy={10} />
+                      <YAxis tick={axisTick} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} tickFormatter={rupeeTick} domain={['auto', 'auto']} />
                       <Tooltip
                         content={({ active, payload }) => {
                           if (active && payload && payload.length) {
                             const data = payload[0].payload;
                             return (
-                              <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl border border-slate-700 text-xs space-y-1">
-                                <p className="text-[10px] font-black text-amber-400 uppercase">
+                              <div className="bg-white text-slate-900 p-3 rounded-lg shadow-lg border border-slate-200 text-xs space-y-1">
+                                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
                                   {data.fullLabel || data.name} ({data.type})
                                 </p>
                                 {data.historicalRate && (
-                                  <p className="text-sm font-black text-emerald-400">
+                                  <p className="text-sm font-bold text-[#23408e]">
                                     Bought Rate: Rs. {data.historicalRate.toLocaleString('en-IN')} / {material.unit}
                                   </p>
                                 )}
                                 {data.predictedRate && (
-                                  <p className="text-sm font-black text-purple-400">
+                                  <p className="text-sm font-bold text-[#4f6fbf]">
                                     Predicted Rate: Rs. {data.predictedRate.toLocaleString('en-IN')} / {material.unit}
                                   </p>
                                 )}
@@ -1086,7 +1018,7 @@ export default function MaterialRateGraphModal({
                         verticalAlign="top"
                         height={36}
                         formatter={(val) => (
-                          <span className="text-xs font-extrabold text-slate-800 mr-3">
+                          <span className="text-xs font-semibold text-slate-700 mr-3">
                             {val === 'historicalRate' ? 'Historical Purchases (Actual)' : 'AI Future Prediction (Search)'}
                           </span>
                         )}
@@ -1095,87 +1027,89 @@ export default function MaterialRateGraphModal({
                         type="monotone"
                         dataKey="historicalRate"
                         name="historicalRate"
-                        stroke="#059669"
-                        strokeWidth={3}
+                        stroke={NAVY}
+                        strokeWidth={2.5}
                         fillOpacity={1}
                         fill="url(#dualHistoricalGradient)"
-                        dot={{ r: 4, fill: '#059669', strokeWidth: 2, stroke: '#ffffff' }}
+                        dot={{ r: 4, fill: NAVY, strokeWidth: 2, stroke: '#ffffff' }}
                       />
                       <Area
                         type="monotone"
                         dataKey="predictedRate"
                         name="predictedRate"
-                        stroke="#7c3aed"
-                        strokeWidth={3}
-                        strokeDasharray="4 4"
+                        stroke={NAVY_LIGHT}
+                        strokeWidth={2.5}
+                        strokeDasharray="5 4"
                         fillOpacity={1}
                         fill="url(#dualFutureGradient)"
-                        dot={{ r: 4, fill: '#7c3aed', strokeWidth: 2, stroke: '#ffffff' }}
+                        dot={{ r: 4, fill: NAVY_LIGHT, strokeWidth: 2, stroke: '#ffffff' }}
                       />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          {/* Historical Rate Ledger Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-                <Clock size={15} className="text-slate-700" />
-                Rate History Ledger & Vendor Purchases ({sortedHistory.length} Record{sortedHistory.length !== 1 ? 's' : ''})
+          {/* Rate history ledger */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-[#eaf0fb] text-[#23408e] flex items-center justify-center shrink-0">
+                  <Clock size={15} />
+                </span>
+                Rate History Ledger & Vendor Purchases
+                <span className="px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
+                  {sortedHistory.length} Record{sortedHistory.length !== 1 ? 's' : ''}
+                </span>
               </h3>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="w-full text-left text-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
-                    <th className="py-2.5 px-3">Date & Month</th>
-                    <th className="py-2.5 px-3 text-right">Unit Rate (Rs.)</th>
-                    <th className="py-2.5 px-3">Vendor / Supplier</th>
-                    <th className="py-2.5 px-3 text-right">Qty ({material.unit})</th>
-                    <th className="py-2.5 px-3 text-right">Total Price (Rs.)</th>
-                    <th className="py-2.5 px-3">Remarks / Note</th>
+                  <tr className="bg-[#23408e] text-white text-xs font-semibold uppercase tracking-wide">
+                    <th className="py-3 px-3">Date & Month</th>
+                    <th className="py-3 px-3 text-right">Unit Rate (Rs.)</th>
+                    <th className="py-3 px-3">Vendor / Supplier</th>
+                    <th className="py-3 px-3 text-right">Qty ({material.unit})</th>
+                    <th className="py-3 px-3 text-right">Total Price (Rs.)</th>
+                    <th className="py-3 px-3">Remarks / Note</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
+                <tbody className="text-[13px] text-slate-700">
                   {noRate && (
                     <tr>
-                      <td colSpan={6} className="py-6 px-3 text-center text-slate-500">No purchases recorded for this material yet.</td>
+                      <td colSpan={6} className="py-8 px-3 text-center text-slate-400 font-medium">No purchases recorded for this material yet.</td>
                     </tr>
                   )}
                   {sortedHistory
                     .slice()
                     .reverse()
                     .map((pt, idx) => (
-                      <tr key={pt.id || idx} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-2.5 px-3 font-bold text-slate-900 whitespace-nowrap">
-                          {formatDateFull(pt.date)} ({formatDateAndMonth(pt.date)})
+                      <tr key={pt.id || idx} className="border-b border-slate-100 hover:bg-[#f5f8fd] transition-colors">
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          <div className="font-semibold text-slate-900">{formatDateFull(pt.date)}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">{formatDateAndMonth(pt.date)}</div>
                         </td>
-                        <td className="py-2.5 px-3 text-right font-black text-slate-950 whitespace-nowrap">
+                        <td className="py-3 px-3 text-right font-semibold text-slate-900 whitespace-nowrap">
                           Rs. {pt.rate.toLocaleString('en-IN')}
                         </td>
-                        <td className="py-2.5 px-3 text-slate-700 font-semibold truncate max-w-[180px]">
-                          {pt.vendorName || '—'}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-bold text-slate-700">
-                          {pt.quantity ?? '—'}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-extrabold text-emerald-800 whitespace-nowrap">
+                        <td className="py-3 px-3 truncate max-w-[180px]">{pt.vendorName || '—'}</td>
+                        <td className="py-3 px-3 text-right">{pt.quantity ?? '—'}</td>
+                        <td className="py-3 px-3 text-right font-semibold text-slate-900 whitespace-nowrap">
                           {pt.quantity
                             ? `Rs. ${(pt.totalPrice || pt.rate * pt.quantity).toLocaleString('en-IN')}`
                             : '—'}
                         </td>
-                        <td className="py-2.5 px-3 text-slate-500 text-[11px] max-w-[220px]">
+                        <td className="py-3 px-3 text-slate-500 text-xs max-w-[220px]">
                           <div className="truncate">{pt.notes || '—'}</div>
                           {pt.sourceUrl && (
                             <a
                               href={pt.sourceUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-800 underline mt-0.5"
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#23408e] hover:underline mt-0.5"
                               title={pt.sourceTitle || 'View attached market source'}
                             >
                               <ExternalLink size={10} />
@@ -1191,15 +1125,15 @@ export default function MaterialRateGraphModal({
           </div>
         </div>
 
-        {/* Modal Footer */}
-        <div className="bg-white p-4 border-t border-slate-200 flex items-center justify-between">
-          <div className="text-xs text-slate-500 font-medium hidden sm:block">
+        {/* Footer */}
+        <div className="bg-white px-5 sm:px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3">
+          <div className="text-xs text-slate-500 hidden sm:block">
             Forecast powered by Live Market Search Engine with Indian commodity indices.
           </div>
           <button
             id="btn-close-modal-footer"
             onClick={onClose}
-            className="px-5 py-2 bg-slate-950 hover:bg-black text-white text-xs font-extrabold rounded-xl transition-colors cursor-pointer ml-auto"
+            className="px-5 py-2.5 bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer ml-auto"
           >
             Close Rate Analytics
           </button>
