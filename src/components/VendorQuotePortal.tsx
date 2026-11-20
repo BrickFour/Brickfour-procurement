@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { apiError, userMessage } from '../lib/userError';
 const brandLogo = '/brickfour-logo.jpeg';
 import {
   Type,
@@ -224,7 +225,7 @@ export default function VendorQuotePortal() {
       .then(async (res) => {
         const json = await res.json().catch(() => null);
         if (cancelled) return;
-        if (!res.ok || !json?.success) throw new Error(json?.error || 'Unable to open this quotation request.');
+        if (!res.ok || !json?.success) throw apiError(json, 'Unable to open this quotation request. Please try again in a moment.');
         const existing: ExistingQuote | null = json.existingQuote;
         setState({
           kind: 'ready',
@@ -265,7 +266,7 @@ export default function VendorQuotePortal() {
         }
       })
       .catch((err) => {
-        if (!cancelled) setState({ kind: 'error', message: err.message });
+        if (!cancelled) setState({ kind: 'error', message: userMessage(err, 'Unable to open this quotation request. Please check your internet connection and try again.') });
       });
     return () => {
       cancelled = true;
@@ -373,10 +374,10 @@ export default function VendorQuotePortal() {
         body: JSON.stringify({ pr: prId, v: vendorId, t: token, method: 'text', text: quoteText }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || 'We could not read this text.');
+      if (!res.ok || !json?.success) throw apiError(json, 'We could not read this text. Please fill in the key figures manually.');
       applyExtracted(json.fields || {});
     } catch (err: any) {
-      setReading({ status: 'error', message: err.message });
+      setReading({ status: 'error', message: userMessage(err, 'We could not read this. Please fill in the key figures manually.') });
     }
   };
 
@@ -395,11 +396,11 @@ export default function VendorQuotePortal() {
         body: JSON.stringify({ pr: prId, v: vendorId, t: token, method, fileName: file.name, data }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || 'We could not read this file.');
+      if (!res.ok || !json?.success) throw apiError(json, 'We could not read this file. Please fill in the key figures manually.');
       setAttachment(json.attachment);
       applyExtracted(json.fields || {});
     } catch (err: any) {
-      setReading({ status: 'error', message: err.message });
+      setReading({ status: 'error', message: userMessage(err, 'We could not read this. Please fill in the key figures manually.') });
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -446,11 +447,11 @@ export default function VendorQuotePortal() {
         }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || 'Submission failed. Please try again.');
+      if (!res.ok || !json?.success) throw apiError(json, 'Submission failed. Please try again.');
       setResult({ kind: 'submitted', at: json.quote?.submittedAt || new Date().toLocaleString() });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
-      setSubmitError(err.message);
+      setSubmitError(userMessage(err, 'Could not send your response. Please check your internet connection and try again.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -466,12 +467,12 @@ export default function VendorQuotePortal() {
         body: JSON.stringify({ pr: prId, v: vendorId, t: token, reason: declineReason }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || 'Could not record your response.');
+      if (!res.ok || !json?.success) throw apiError(json, 'Could not record your response. Please try again.');
       setDeclineOpen(false);
       setResult({ kind: 'declined', at: json.declinedAt });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
-      setSubmitError(err.message);
+      setSubmitError(userMessage(err, 'Could not send your response. Please check your internet connection and try again.'));
     } finally {
       setIsSubmitting(false);
     }

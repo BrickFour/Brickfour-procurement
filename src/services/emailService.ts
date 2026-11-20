@@ -35,11 +35,11 @@ export async function sendEmailNotification(data: {
         prDetails: data.prDetails,
       }),
     });
-    const json = await res.json();
-    console.log('Resend API Dispatch Result:', json);
+    const json = await res.json().catch(() => null);
+    if (!json) return { success: false, error: 'The email could not be sent right now. Please try again.' };
     return json;
   } catch (err) {
     console.error('Failed to trigger /api/send-email:', err);
-    return { success: false, error: err };
+    return { success: false, error: 'The email could not be sent. Please check your internet connection and try again.' };
   }
 }

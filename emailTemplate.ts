@@ -111,7 +111,7 @@ export function contentFromPlainText(heading: string, body: string): EmailConten
   return { heading, paragraphs, details: details.length ? details : undefined };
 }
 
-export function renderEmailHtml(content: EmailContent, brandName: string): string {
+export function renderEmailHtml(content: EmailContent, brandName: string, logoUrl = ''): string {
   const p = (html: string, extra = '') =>
     `<p style="margin:0 0 16px;font-family:${FONT};font-size:15px;line-height:24px;color:${COLORS.text};${extra}">${html}</p>`;
 
@@ -160,7 +160,14 @@ ${content.preheader ? `<div style="display:none;max-height:0;overflow:hidden;opa
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${COLORS.page};">
   <tr><td align="center" style="padding:32px 12px;">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:${COLORS.card};border:1px solid ${COLORS.border};border-top:4px solid ${COLORS.accent};border-radius:8px;">
-      <tr><td style="padding:22px 32px;border-bottom:1px solid ${COLORS.border};font-family:${FONT};font-size:17px;font-weight:bold;color:${COLORS.heading};">${escapeHtml(brandName)}</td></tr>
+      <tr><td style="padding:${logoUrl ? '18px' : '22px'} 32px;border-bottom:1px solid ${COLORS.border};font-family:${FONT};font-size:17px;font-weight:bold;color:${COLORS.heading};">${
+        safeUrl(logoUrl)
+          ? `<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+              <td style="vertical-align:middle;padding-right:14px;"><img src="${escapeHtml(safeUrl(logoUrl))}" alt="${escapeHtml(brandName)}" height="40" style="display:block;height:40px;width:auto;border:0;outline:none;text-decoration:none;"></td>
+              <td style="vertical-align:middle;font-family:${FONT};font-size:17px;font-weight:bold;color:${COLORS.heading};border-left:1px solid ${COLORS.border};padding-left:14px;">${escapeHtml(brandName)}</td>
+            </tr></table>`
+          : escapeHtml(brandName)
+      }</td></tr>
       <tr><td style="padding:32px;">
         <h1 style="margin:0 0 20px;font-family:${FONT};font-size:22px;line-height:30px;color:${COLORS.heading};font-weight:bold;">${escapeHtml(content.heading)}</h1>
         ${content.greeting ? p(escapeHtml(content.greeting)) : ''}

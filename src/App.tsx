@@ -30,6 +30,7 @@ import InternalTransfer from './components/InternalTransfer';
 import MaterialCodeSummary from './components/MaterialCodeSummary';
 import GstUrdBillsSummary from './components/GstUrdBillsSummary';
 import AuthModal from './components/AuthModal';
+import { apiError, safeText, userMessage } from './lib/userError';
 import LoginPage from './components/LoginPage';
 import AdminProjectManager from './components/AdminProjectManager';
 import FloatingChatbot from './components/FloatingChatbot';
@@ -344,7 +345,7 @@ export default function App() {
         body: JSON.stringify({ prId, vendorId, pr: targetPR, quote: winningQuote, awardedBy: currentUser.name }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || `Server returned HTTP ${res.status}`);
+      if (!res.ok || !json?.success) throw apiError(json, 'The server could not generate it right now.');
       const po: PurchaseOrderRef = json.purchaseOrder;
       setPrs((prev) => prev.map((p) => (p.id === prId ? { ...p, status: 'Awarded', selectedVendorId: vendorId, purchaseOrder: po } : p)));
 
@@ -353,7 +354,7 @@ export default function App() {
         return true;
       }
       if (po.emailStatus === 'failed' && !opts.silent) {
-        alert(`${po.poNumber} was generated and saved, but it could not be emailed to ${winningQuote.vendorName}.\n\n${json.emailError || ''}\n\nYou can download it from Purchase Orders and send it manually.`);
+        alert(`${po.poNumber} was generated and saved, but it could not be emailed to ${winningQuote.vendorName}.\n\n${safeText(json.emailError, 'The email could not be delivered.')}\n\nYou can download it from Purchase Orders and send it manually.`);
       }
       setAwardToast({
         vendorName: winningQuote.vendorName,
@@ -368,7 +369,7 @@ export default function App() {
       return true;
     } catch (err: any) {
       if (!opts.silent) {
-        alert(`${prId} was awarded to ${winningQuote.vendorName}, but the purchase order could not be generated.\n\n${err?.message || err}\n\nUse "Retry PO" under Purchase Orders.`);
+        alert(`${prId} was awarded to ${winningQuote.vendorName}, but the purchase order could not be generated.\n\n${userMessage(err, 'Please check your internet connection and try again.')}\n\nUse "Retry PO" under Purchase Orders.`);
       }
       return false;
     }
@@ -402,7 +403,7 @@ export default function App() {
         body: JSON.stringify({ ...input, recordedBy: currentUser.name }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) return { ok: false, error: json?.error || `Server returned HTTP ${res.status}` };
+      if (!res.ok || !json?.success) return { ok: false, error: apiError(json, 'Could not record the delivery. Please try again.').message };
       const r: PurchaseOrderReceipt = json.receipt;
       const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -513,7 +514,8 @@ export default function App() {
       notificationsRefresh.current?.();
       return { ok: true, receipt: r, stockUpdated: Boolean(material) || materialCreated, materialCreated, projectName, estimationDelta };
     } catch (err: any) {
-      return { ok: false, error: err?.message || 'Network error' };
+      console.error('[Delivery] Could not record delivery:', err);
+      return { ok: false, error: 'Could not record the delivery. Please check your internet connection and try again.' };
     }
   };
 

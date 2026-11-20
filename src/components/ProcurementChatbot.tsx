@@ -174,7 +174,7 @@ export default function ProcurementChatbot({
         {
           id: `ai-err-${Date.now()}`,
           role: 'model',
-          text: `⚠️ **AI Intelligence Response:**\n\nComparing current active records:\n- **PR-2026-001 (TMT Steel 20T):** **Jindal Panther** is Rank 1 with Rs. 63,800/Ton (1.8% below market) & 45 days credit.\n- **PR-2026-002 (OPC 53 Cement 600 Bags):** **UltraTech** is Rank 1 at Rs. 372/Bag (3.4% below market) & 45 days credit.\n\nAll quotations are compliant with technical IS specifications.`,
+          text: `The assistant is unavailable right now. Please check your internet connection and try again in a moment.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);

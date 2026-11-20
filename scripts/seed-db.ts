@@ -1,5 +1,5 @@
 /**
- * Creates the MongoDB database (MONGODB_DB, default "vyas_inventory") with all collections and indexes,
+ * Creates the MongoDB database (MONGODB_DB, default "brickfour_inventory") with all collections and indexes,
  * and fills every EMPTY collection with the application's initial data.
  * Collections that already contain documents are left untouched unless --force is passed.
  *
@@ -38,7 +38,7 @@ const SEED: { name: string; keyField: string; docs: any[] }[] = [
 
 async function main() {
   const uri = process.env.MONGODB_URI;
-  const dbName = process.env.MONGODB_DB || 'vyas_inventory';
+  const dbName = process.env.MONGODB_DB || 'brickfour_inventory';
   const force = process.argv.includes('--force');
   if (!uri) throw new Error('MONGODB_URI is not set (check your .env file).');
 

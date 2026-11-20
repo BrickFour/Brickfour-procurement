@@ -214,7 +214,7 @@ function getMongoDb(): Promise<Db> {
   if (mongoDbPromise) return mongoDbPromise;
 
   const uri = process.env.MONGODB_URI;
-  const dbName = process.env.MONGODB_DB || 'vyas_inventory';
+  const dbName = process.env.MONGODB_DB || 'brickfour_inventory';
   if (!uri) {
     return Promise.reject(new Error('MONGODB_URI is not configured on the server.'));
   }
@@ -258,7 +258,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       await db.command({ ping: 1 });
       return res.json({ status: 'ok', database: 'connected' });
     } catch (err: any) {
-      return res.status(503).json({ status: 'degraded', database: 'unavailable', error: err?.message });
+      console.error('[Health] Database check failed:', err?.message || err);
+      return res.status(503).json({ status: 'degraded', database: 'unavailable' });
     }
   });
 
@@ -287,7 +288,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       });
     } catch (err: any) {
       console.error('[MongoDB] Error loading data:', err?.message || err);
-      return res.status(503).json({ success: false, error: err?.message || 'Failed to load from MongoDB' });
+      return res.status(503).json({ success: false, error: 'Could not load data right now. Please refresh the page in a moment.' });
     }
   });
 
@@ -297,10 +298,11 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       const { collection, upserts = [], deletes = [] } = req.body || {};
       const keyField = COLLECTION_KEYS[collection];
       if (!keyField) {
-        return res.status(400).json({ success: false, error: `Unknown collection: ${collection}` });
+        console.warn('[MongoDB] Sync rejected - unknown collection:', collection);
+        return res.status(400).json({ success: false, error: 'Could not save these changes. Please refresh the page and try again.' });
       }
       if (!Array.isArray(upserts) || !Array.isArray(deletes)) {
-        return res.status(400).json({ success: false, error: 'upserts and deletes must be arrays.' });
+        return res.status(400).json({ success: false, error: 'Could not save these changes. Please refresh the page and try again.' });
       }
 
       const db = await getMongoDb();
@@ -343,7 +345,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       return res.json({ success: true, upserted: upserts.length, deleted: deleteKeys.length });
     } catch (err: any) {
       console.error('[MongoDB] Error syncing data:', err?.message || err);
-      return res.status(500).json({ success: false, error: err?.message || 'Failed to sync with MongoDB' });
+      return res.status(500).json({ success: false, error: 'Could not save your changes right now. Please try again.' });
     }
   });
 
@@ -357,7 +359,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
   }
   // Internal inbox used only when a notification has no explicit recipient (e.g. site alerts)
   const TARGET_EMAIL = process.env.NOTIFICATION_EMAIL || '';
-  // Sender for all outgoing emails, e.g. "Vyas Procurement <noreply@yourdomain.com>".
+  // Sender for all outgoing emails, e.g. "Brickfour Procurement <noreply@yourdomain.com>".
   // The domain must be verified in Resend, otherwise Resend only delivers to the account owner's address.
   const EMAIL_FROM = process.env.EMAIL_FROM || 'No-Reply <onboarding@resend.dev>';
   if (!process.env.EMAIL_FROM) {
@@ -365,6 +367,9 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
   }
   // Company name shown in the email header/footer (defaults to the sender's display name)
   const EMAIL_BRAND = process.env.EMAIL_BRAND || EMAIL_FROM.replace(/\s*<.*$/, '').replace(/"/g, '').trim() || 'Procurement';
+  // Logo shown in the email header, loaded from the deployed app (emails need a public https address)
+  const PUBLIC_APP_URL = String(process.env.PUBLIC_APP_URL || process.env.VITE_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+  const EMAIL_LOGO_URL = /^https:\/\//i.test(PUBLIC_APP_URL) ? `${PUBLIC_APP_URL}/brickfour-logo.jpeg` : '';
   const isValidEmail = (value: string) => /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(value);
 
   /**
@@ -386,7 +391,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
           to: [opts.to],
           subject: opts.subject,
           text: renderEmailText(opts.content),
-          html: renderEmailHtml(opts.content, EMAIL_BRAND),
+          html: renderEmailHtml(opts.content, EMAIL_BRAND, EMAIL_LOGO_URL),
           ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
         });
       } catch (sendErr: any) {
@@ -398,13 +403,15 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       await new Promise((r) => setTimeout(r, 700 * attempt));
     }
     if (response?.error || !response?.data?.id) {
+      // Full provider details go to the server log only; users see a plain message
       const reason = response?.error?.message || 'Unknown email service error';
-      console.warn(`[Email] Failed to send "${opts.label}" to ${opts.to}: ${reason}`);
+      const hint = /verify a domain|testing emails|own email address/i.test(reason)
+        ? ' (sending domain not verified in Resend - verify it at resend.com/domains and set EMAIL_FROM)'
+        : '';
+      console.warn(`[Email] Failed to send "${opts.label}" to ${opts.to}: ${reason}${hint}`);
       return {
         ok: false,
-        error: /verify a domain|testing emails|own email address/i.test(reason)
-          ? `Email not sent to ${opts.to}: the sending domain is not verified in Resend, so it can only deliver to the Resend account owner. Verify your domain at resend.com/domains and set EMAIL_FROM.`
-          : `Email not sent to ${opts.to}: ${reason}`,
+        error: `The email to ${opts.to} could not be delivered. Please check the address or try again later.`,
       };
     }
     console.log(`[Email] Sent "${opts.label}" to ${opts.to} (id ${response.data.id})`);
@@ -446,7 +453,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       });
     } catch (err: any) {
       console.error('[Email] Error dispatching email:', err);
-      return res.status(500).json({ success: false, error: err?.message || 'Failed to send email' });
+      return res.status(500).json({ success: false, error: 'The email could not be sent right now. Please try again.' });
     }
   });
 
@@ -911,7 +918,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
 
   const PURCHASE_ORDERS = 'purchase_orders';
   const COMPANY = {
-    name: process.env.COMPANY_NAME || 'Rajesh Vyas Group',
+    name: process.env.COMPANY_NAME || 'Brickfour',
     address: process.env.COMPANY_ADDRESS || '',
     gstin: (process.env.COMPANY_GSTIN || '').toUpperCase(),
     pan: (process.env.COMPANY_PAN || '').toUpperCase(),
@@ -2913,7 +2920,7 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
 
   // Unknown API routes should not fall through to the SPA
   app.use('/api', (_req, res) => {
-    res.status(404).json({ success: false, error: 'Not found' });
+    res.status(404).json({ success: false, error: 'This action is not available.' });
   });
 
   if (!serveFrontend) {
@@ -2943,6 +2950,21 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Last-resort error handler (malformed request body, file too large, unexpected crash):
+  // log the details on the server and answer with a plain message, never a stack trace
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    const status = Number(err?.status || err?.statusCode) || 500;
+    console.error(`[Server] ${req.method} ${req.path} failed (${status}):`, err?.stack || err?.message || err);
+    const error =
+      status === 413
+        ? 'This file is too large. Please upload a smaller file.'
+        : status >= 400 && status < 500
+          ? 'This request could not be processed. Please refresh the page and try again.'
+          : 'Something went wrong on our side. Please try again.';
+    res.status(status >= 400 && status < 600 ? status : 500).json({ success: false, error });
+  });
 
   return app;
 }

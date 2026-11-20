@@ -1,4 +1,4 @@
-# Vyas Inventory Tool
+# Brickfour Procurement
 
 Construction material inventory, site consumption tracking and vendor procurement platform.
 
@@ -22,11 +22,11 @@ Copy `.env.example` to `.env` and fill in the values:
 | Variable | Required | Description |
 | --- | --- | --- |
 | `MONGODB_URI` | Yes | MongoDB connection string |
-| `MONGODB_DB` | No | Database name (default `vyas_inventory`) |
+| `MONGODB_DB` | No | Database name (default `brickfour_inventory`) |
 | `PORT` | No | HTTP port (default `3000`) |
 | `GEMINI_API_KEY` | No | Enables live AI features; built-in fallbacks are used without it |
 | `RESEND_API_KEY` | For email | Resend API key |
-| `EMAIL_FROM` | For email | Sender, e.g. `Vyas Procurement <noreply@yourdomain.com>`. The domain must be verified in Resend; without it Resend only delivers to the Resend account owner |
+| `EMAIL_FROM` | For email | Sender, e.g. `Brickfour Procurement <noreply@yourdomain.com>`. The domain must be verified in Resend; without it Resend only delivers to the Resend account owner |
 | `NOTIFICATION_EMAIL` | No | Internal inbox for notifications that have no specific recipient |
 
 On first start against an empty database the app seeds MongoDB with the initial dataset. Any data a browser had saved
@@ -54,8 +54,8 @@ Health check: `GET /api/health` returns `200` when the database is reachable.
 ### Docker
 
 ```bash
-docker build -t vyas-inventory-tool .
-docker run -p 3000:3000 --env-file .env vyas-inventory-tool
+docker build -t brickfour-procurement .
+docker run -p 3000:3000 --env-file .env brickfour-procurement
 ```
 
 ### Hosting platforms (Render, Railway, a VPS, etc.)

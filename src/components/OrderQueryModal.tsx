@@ -3,6 +3,7 @@ import { Material, Project, User, Vendor, MarketPriceBenchmark, ProjectRequireme
 import { resolveMaterialCode, resolveMaterialGroup } from '../lib/materialCodes';
 import { getVendorsForMaterialCode, getMarketBenchmark, EVALUATION_CRITERIA_TEXT } from '../lib/vendorComparison';
 import { sendEmailNotification } from '../services/emailService';
+import { safeText } from '../lib/userError';
 import { withVendorQuoteTokens, buildVendorQuoteUrl } from '../lib/vendorQuoteLinks';
 import {
   X,
@@ -443,9 +444,9 @@ Contact Email: ganeshnagargoje1008@gmail.com
           type: 'Vendor RFQ Enquiry',
           email: buildRfqEmail(vendor.name, quoteUrlFor(vendor.id)),
         });
-        results.push({ vendor, ok: Boolean(res?.success), error: res?.error ? String(res.error) : '' });
-      } catch (err: any) {
-        results.push({ vendor, ok: false, error: err?.message || 'network error' });
+        results.push({ vendor, ok: Boolean(res?.success), error: res?.success ? '' : safeText(res?.error, 'the email could not be delivered') });
+      } catch {
+        results.push({ vendor, ok: false, error: 'the email could not be sent (connection problem)' });
       }
     }
 

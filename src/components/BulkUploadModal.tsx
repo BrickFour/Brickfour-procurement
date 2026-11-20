@@ -19,6 +19,7 @@ import {
   collectUnmatchedSupplyItems,
 } from '../lib/bulkImport';
 import { STANDARD_MATERIAL_GROUPS, resolveMaterialGroup } from '../lib/materialCodes';
+import { apiError, userMessage, UserFacingError } from '../lib/userError';
 
 const SAMPLE_MATERIAL_IDS = new Set(INITIAL_MATERIALS.map((m) => m.id));
 const SAMPLE_TRANSACTION_IDS = new Set(INITIAL_TRANSACTIONS.map((t) => t.id));
@@ -203,11 +204,11 @@ export default function BulkUploadModal({
         body: JSON.stringify({ type: kind, fileName: file.name, data: await readAsBase64(file) }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || `Could not read the file (HTTP ${res.status}).`);
-      if (!json.rows?.length) throw new Error('The sheet has a header row but no data rows.');
+      if (!res.ok || !json?.success) throw apiError(json, 'Could not read the file. Please check it is the downloaded template and try again.');
+      if (!json.rows?.length) throw new UserFacingError('The sheet has a header row but no data rows.');
       setSheet({ headers: json.headers, rows: json.rows });
     } catch (e: any) {
-      setError(e?.message || 'Could not read the file.');
+      setError(userMessage(e, 'Could not read the file. Please check your internet connection and try again.'));
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';

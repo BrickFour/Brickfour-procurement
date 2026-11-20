@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { apiError, safeText, userMessage } from '../lib/userError';
 import {
   ProjectRequirement,
   Vendor,
@@ -47,7 +48,7 @@ import {
   Banknote,
 } from 'lucide-react';
 
-/* Brand colours (from the Vyas logo) */
+/* Brand colours (app theme) */
 const BRAND = '#23408e';
 
 const SUBMISSION_METHOD_LABEL: Record<string, string> = {
@@ -239,7 +240,7 @@ function DeliveryDialog({
         body: JSON.stringify({ fileName: f.name, data }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || `Server returned HTTP ${res.status}`);
+      if (!res.ok || !json?.success) throw apiError(json, 'Could not read the invoice.');
       const inv: ExtractedInvoice = json.invoice;
       const filled: string[] = [];
       const warnings: string[] = [];
@@ -267,7 +268,7 @@ function DeliveryDialog({
           : { ok: false, text: 'Could not read details from this invoice. Please fill in the fields below.', warnings }
       );
     } catch (err: any) {
-      setReadResult({ ok: false, text: `${err?.message || 'Could not read the invoice.'} The file will still be attached; please fill in the fields below.`, warnings: [] });
+      setReadResult({ ok: false, text: `${userMessage(err, 'Could not read the invoice.')} The file will still be attached; please fill in the fields below.`, warnings: [] });
     } finally {
       setReading(false);
     }
@@ -298,7 +299,7 @@ function DeliveryDialog({
       ...(lineItems.length ? { lineItems } : {}),
     });
     setBusy(false);
-    if (!result.ok) setError(result.error || 'Could not record the delivery.');
+    if (!result.ok) setError(safeText(result.error, 'Could not record the delivery. Please try again.'));
   };
 
   const field = 'w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30 focus:border-[#23408e]';
@@ -541,11 +542,11 @@ export default function OrderQueryComparisonCenter({
         body: JSON.stringify({ paidOn: todayIso(), reference, paidBy: currentUser.name }),
       });
       const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) throw new Error(json?.error || `Server returned HTTP ${res.status}`);
+      if (!res.ok || !json?.success) throw apiError(json, 'Could not record the payment. Please try again.');
       setNotice(`Invoice ${r.invoiceNumber} marked as paid. No further reminders will be sent.`);
       loadPurchaseOrders();
     } catch (err: any) {
-      alert(err?.message || 'Could not record the payment.');
+      alert(userMessage(err, 'Could not record the payment. Please check your internet connection and try again.'));
     } finally {
       setPayingId(null);
     }

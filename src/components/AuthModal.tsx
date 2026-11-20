@@ -264,7 +264,7 @@ export default function AuthModal({
                     required
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="e.g. rajesh.sharma@bhandar.com or admin@bhandar.com"
+                    placeholder="e.g. name@brickfour.com"
                     className="w-full bg-white border border-slate-300 text-slate-950 text-sm rounded-xl px-3.5 py-2.5 focus:outline-hidden focus:border-slate-950 focus:ring-1 focus:ring-slate-950/20"
                   />
                 </div>
@@ -486,7 +486,7 @@ export default function AuthModal({
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="e.g. rahul.sharma@bhandar.com"
+                    placeholder="e.g. sitemanager@brickfour.com"
                     className="w-full bg-white border border-slate-300 text-slate-950 text-sm rounded-xl px-3.5 py-2.5 focus:outline-hidden focus:border-slate-950"
                   />
                 </div>

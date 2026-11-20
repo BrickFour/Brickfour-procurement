@@ -24,7 +24,7 @@ export function withVendorQuoteTokens(pr: ProjectRequirement, vendorIds: string[
 }
 
 /**
- * Public address vendors use to reach the app. Set VITE_PUBLIC_APP_URL (e.g. https://vyas-inventory-kohl.vercel.app)
+ * Public address vendors use to reach the app. Set VITE_PUBLIC_APP_URL (e.g. https://brickfour-procurement.vercel.app)
  * so links stay correct even when an RFQ is sent from a local/dev copy (localhost links do not work for vendors).
  */
 export function publicAppUrl(): string {

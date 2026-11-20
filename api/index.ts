@@ -12,6 +12,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       throw err;
     });
   }
-  const app = await appPromise;
+  let app: Awaited<ReturnType<typeof createApp>>;
+  try {
+    app = await appPromise;
+  } catch (err: any) {
+    // Never show start-up details to users: log them and answer with a plain message
+    console.error('[API] Failed to start:', err?.stack || err?.message || err);
+    res.statusCode = 503;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ success: false, error: 'The service is temporarily unavailable. Please try again in a moment.' }));
+    return;
+  }
   return (app as unknown as (req: IncomingMessage, res: ServerResponse) => void)(req, res);
 }
