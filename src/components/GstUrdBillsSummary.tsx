@@ -1,4 +1,4 @@
-import { useState, useMemo, FormEvent } from 'react';
+import { useState, useMemo, FormEvent, Fragment } from 'react';
 import { Material, InventoryTransaction, Project, User, BillType } from '../types';
 import {
   Search,
@@ -21,6 +21,9 @@ import {
   AlertTriangle,
   Info,
   Hash,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { resolveMaterialCode, STANDARD_MATERIAL_GROUPS } from '../lib/materialCodes';
@@ -78,6 +81,8 @@ interface GstUrdBillsSummaryProps {
   onAddBillTransaction?: (
     txData: Omit<InventoryTransaction, 'id'> & { materialId: string }
   ) => void;
+  /** Delete a bill: a purchase entry (transaction) or a material's opening-stock bill */
+  onDeleteBill?: (bill: { sourceType: 'material' | 'transaction'; sourceId: string }) => void;
 }
 
 export default function GstUrdBillsSummary({
@@ -88,7 +93,10 @@ export default function GstUrdBillsSummary({
   currentUser,
   onUpdateMaterialBillType,
   onAddBillTransaction,
+  onDeleteBill,
 }: GstUrdBillsSummaryProps) {
+  const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
+  const [deleteBillTarget, setDeleteBillTarget] = useState<UnifiedBillItem | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<'all' | 'gst' | 'urd' | 'by-code' | 'by-vendor'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterProject, setFilterProject] = useState<string>(selectedProjectId);
@@ -193,7 +201,8 @@ export default function GstUrdBillsSummary({
     // 2. Initial Stock Materials (for baseline inventory purchases)
     materials.forEach((mat) => {
       // If material has initial stock > 0, include baseline procurement bill
-      if (mat.currentStock > 0) {
+      // Opening stock entered by bulk upload is not a purchase bill, so it is not listed here
+      if (mat.currentStock > 0 && mat.billNumber !== 'OPENING-STOCK' && !mat.baseBillRemoved) {
         const resolvedType = resolveMaterialBillType(mat);
         const code = resolveMaterialCode(mat);
         const group = mat.materialGroup || 'General Construction Materials';
@@ -286,6 +295,20 @@ export default function GstUrdBillsSummary({
         return 0;
       });
   }, [allBills, filterProject, activeSubTab, filterCategory, filterGstRate, searchQuery, sortBy]);
+
+  // The register lists the 20 most recent bills; older ones only on request
+  const [showOlderBills, setShowOlderBills] = useState(false);
+  const RECENT_BILLS = 20;
+  const visibleBills = useMemo(() => {
+    if (showOlderBills || filteredBills.length <= RECENT_BILLS) return filteredBills;
+    const recentIds = new Set(
+      [...filteredBills]
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, RECENT_BILLS)
+        .map((b) => b.id)
+    );
+    return filteredBills.filter((b) => recentIds.has(b.id));
+  }, [filteredBills, showOlderBills]);
 
   // Aggregate Metrics
   const metrics = useMemo(() => {
@@ -775,7 +798,7 @@ export default function GstUrdBillsSummary({
               {activeSubTab === 'gst' && 'GST Registered Tax Invoices'}
               {activeSubTab === 'urd' && 'URD Unregistered Dealer Vouchers'}
               <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-slate-100 text-slate-700 border-slate-200">
-                {filteredBills.length} records
+                {visibleBills.length < filteredBills.length ? `${visibleBills.length} most recent of ${filteredBills.length}` : `${filteredBills.length} records`}
               </span>
             </h3>
 
@@ -791,178 +814,242 @@ export default function GstUrdBillsSummary({
             <table className="w-full text-left border-collapse" id="gst-urd-bills-table">
               <thead>
                 <tr className="bg-[#23408e] text-white text-xs font-semibold uppercase tracking-wide">
-                  <th className="px-3 py-3">Bill # & Date</th>
-                  <th className="px-3 py-3">Bill Type</th>
-                  <th className="px-3 py-3">Site / Project</th>
-                  <th className="px-3 py-3">Material & Code</th>
-                  <th className="px-3 py-3">Vendor & GSTIN</th>
-                  <th className="px-3 py-3 text-right">Quantity</th>
-                  <th className="px-3 py-3 text-right">Rate</th>
-                  <th className="px-3 py-3 text-right">Taxable Base</th>
-                  <th className="px-3 py-3 text-right">GST Tax</th>
+                  <th className="px-3 py-3 w-8" aria-label="Details" />
+                  <th className="px-3 py-3">Bill # &amp; Date</th>
+                  <th className="px-3 py-3">Type</th>
+                  <th className="px-3 py-3">Material</th>
+                  <th className="px-3 py-3">Vendor</th>
                   <th className="px-3 py-3 text-right">Grand Total</th>
-                  <th className="px-3 py-3 text-center">Action</th>
+                  <th className="px-3 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="text-[13px]">
                 {filteredBills.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={7} className="py-12 text-center text-slate-400 font-medium">
                       No GST or URD bills match your search criteria.
                     </td>
                   </tr>
                 ) : (
-                  filteredBills.map((bill) => {
+                  visibleBills.map((bill) => {
                     const isGst = bill.billType === 'GST';
+                    const isOpen = expandedBillId === bill.id;
+                    const toggle = () => setExpandedBillId(isOpen ? null : bill.id);
+                    const iconBtn = 'p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-[#23408e] hover:border-[#c9d6f2] hover:bg-[#f5f8fd] transition-colors cursor-pointer';
                     return (
-                      <tr
-                        key={bill.id}
-                        className="border-b border-slate-100 last:border-0 hover:bg-[#f5f8fd] transition-colors group"
-                      >
-                        {/* Bill Number & Date */}
-                        <td className="px-3 py-3 whitespace-nowrap">
-                          <div className="font-semibold text-slate-900 font-mono text-xs">
-                            {bill.billNumber}
-                          </div>
-                          <div className="text-[10px] text-slate-400 font-semibold flex items-center gap-1 mt-0.5">
-                            <Calendar size={10} />
-                            {bill.date}
-                          </div>
-                        </td>
-
-                        {/* Bill Type Badge */}
-                        <td className="px-3 py-3 whitespace-nowrap">
-                          {isGst ? (
-                            <div className="flex flex-col gap-0.5">
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2] w-fit">
-                                GST TAX INVOICE
-                              </span>
-                              <span className="text-[11px] text-slate-500">
-                                {bill.gstRate}% GST Rate
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex flex-col gap-0.5">
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-amber-50 text-amber-800 border-amber-200 w-fit">
-                                URD VOUCHER
-                              </span>
-                              <span className="text-[11px] text-slate-500">
-                                Unregistered (0%)
-                              </span>
-                            </div>
-                          )}
-                        </td>
-
-                        {/* Project / Site */}
-                        <td className="px-3 py-3 whitespace-nowrap text-slate-600">
-                          {bill.projectName}
-                        </td>
-
-                        {/* Material & Code */}
-                        <td className="px-3 py-3">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="px-1.5 py-0.5 bg-[#eaf0fb] text-[#23408e] border border-[#c9d6f2] font-mono font-semibold text-[10px] rounded">
-                              #{bill.materialCode}
-                            </span>
-                            <span className="font-semibold text-slate-900">
-                              {bill.materialName}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-slate-400 font-medium block mt-0.5">
-                            {bill.category}
-                          </span>
-                        </td>
-
-                        {/* Vendor & GSTIN */}
-                        <td className="px-3 py-3">
-                          <div className="font-medium text-slate-900 min-w-[150px]">
-                            {bill.vendorName}
-                          </div>
-                          {bill.vendorGstin ? (
-                            <span className="text-[10px] font-mono text-slate-600 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 inline-block mt-0.5 whitespace-nowrap">
-                              GSTIN: {bill.vendorGstin}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-amber-700 font-semibold inline-block mt-0.5">
-                              Unregistered Local Supplier
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Quantity */}
-                        <td className="px-3 py-3 text-right whitespace-nowrap">
-                          <span className="font-medium text-slate-900">
-                            {bill.quantity.toLocaleString('en-IN')}
-                          </span>{' '}
-                          <span className="text-[10px] text-slate-500 font-medium">{bill.unit}</span>
-                        </td>
-
-                        {/* Rate */}
-                        <td className="px-3 py-3 text-right whitespace-nowrap text-slate-700">
-                          Rs. {bill.unitRate.toLocaleString('en-IN')}
-                        </td>
-
-                        {/* Taxable Base */}
-                        <td className="px-3 py-3 text-right whitespace-nowrap text-slate-800">
-                          Rs. {bill.baseAmount.toLocaleString('en-IN')}
-                        </td>
-
-                        {/* GST Tax Portion */}
-                        <td className="px-3 py-3 text-right whitespace-nowrap">
-                          {isGst ? (
-                            <div>
-                              <span className="font-medium text-[#23408e]">
-                                + Rs. {bill.gstAmount.toLocaleString('en-IN')}
-                              </span>
-                              <div className="text-[10px] text-slate-500">
-                                (CGST {bill.cgstAmount.toLocaleString('en-IN')} + SGST {bill.sgstAmount.toLocaleString('en-IN')})
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] font-bold text-slate-400">Rs. 0 (Nil)</span>
-                          )}
-                        </td>
-
-                        {/* Grand Total */}
-                        <td className="px-3 py-3 text-right whitespace-nowrap">
-                          <span className="font-semibold text-slate-900">
-                            Rs. {bill.totalAmount.toLocaleString('en-IN')}
-                          </span>
-                        </td>
-
-                        {/* Action Buttons */}
-                        <td className="px-3 py-3 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1.5">
+                      <Fragment key={bill.id}>
+                        <tr
+                          id={`bill-row-${bill.id}`}
+                          onClick={toggle}
+                          className={`border-b border-slate-100 hover:bg-[#f5f8fd] transition-colors cursor-pointer ${isOpen ? 'bg-[#f5f8fd]' : ''}`}
+                        >
+                          <td className="px-3 py-3 text-slate-400">
                             <button
-                              id={`btn-view-slip-${bill.id}`}
-                              onClick={() => setSelectedBillForSlip(bill)}
-                              className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-[#23408e] hover:border-[#c9d6f2] hover:bg-[#f5f8fd] transition-colors cursor-pointer"
-                              title="View Printable Tax / URD Slip"
+                              type="button"
+                              aria-expanded={isOpen}
+                              aria-label={isOpen ? 'Hide bill details' : 'Show bill details'}
+                              onClick={(e) => { e.stopPropagation(); toggle(); }}
+                              className="cursor-pointer hover:text-slate-700"
                             >
-                              <FileText size={14} />
+                              {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                             </button>
-
-                            {bill.sourceType === 'material' && onUpdateMaterialBillType && (
-                              <button
-                                id={`btn-edit-bill-${bill.id}`}
-                                onClick={() => setEditingBill(bill)}
-                                className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-[#23408e] hover:border-[#c9d6f2] hover:bg-[#f5f8fd] transition-colors cursor-pointer"
-                                title="Change Bill Type (GST/URD) or Invoice Details"
-                              >
-                                <Edit3 size={14} />
-                              </button>
+                          </td>
+                          <td className="px-3 py-3 whitespace-nowrap">
+                            <div className="font-semibold text-slate-900 font-mono text-xs">{bill.billNumber}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">{bill.date}</div>
+                          </td>
+                          <td className="px-3 py-3 whitespace-nowrap">
+                            {isGst ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
+                                GST {bill.gstRate}%
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-amber-50 text-amber-800 border-amber-200">
+                                URD
+                              </span>
                             )}
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="font-semibold text-slate-900">{bill.materialName}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {bill.quantity.toLocaleString('en-IN')} {bill.unit} @ Rs. {bill.unitRate.toLocaleString('en-IN')}
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 text-slate-700 min-w-[160px]">{bill.vendorName}</td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap font-semibold text-slate-900">
+                            Rs. {bill.totalAmount.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                id={`btn-view-slip-${bill.id}`}
+                                onClick={() => setSelectedBillForSlip(bill)}
+                                aria-label="View bill slip"
+                                title="View printable tax invoice / URD slip"
+                                className={iconBtn}
+                              >
+                                <FileText size={14} />
+                              </button>
+                              {bill.sourceType === 'material' && onUpdateMaterialBillType && (
+                                <button
+                                  id={`btn-edit-bill-${bill.id}`}
+                                  onClick={() => setEditingBill(bill)}
+                                  aria-label="Edit bill"
+                                  title="Change bill type (GST/URD) or invoice details"
+                                  className={iconBtn}
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                              )}
+                              {onDeleteBill && (
+                                <button
+                                  id={`btn-delete-bill-${bill.id}`}
+                                  onClick={() => setDeleteBillTarget(bill)}
+                                  aria-label={`Delete bill ${bill.billNumber}`}
+                                  title="Delete this bill"
+                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-colors cursor-pointer"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+
+                        {isOpen && (
+                          <tr id={`bill-details-${bill.id}`} className="bg-[#f5f8fd] border-b border-slate-200">
+                            <td />
+                            <td colSpan={6} className="px-3 pb-4 pt-1">
+                              <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-3 text-sm">
+                                {[
+                                  ['Site / Project', bill.projectName],
+                                  ['Material code', `#${bill.materialCode} - ${bill.materialGroup}`],
+                                  ['Category', bill.category],
+                                  ['Vendor GSTIN', bill.vendorGstin || (isGst ? '—' : 'Unregistered supplier')],
+                                  ['Bill type', isGst ? `GST tax invoice (${bill.gstRate}%)` : 'URD voucher (0% tax)'],
+                                  ['Quantity', `${bill.quantity.toLocaleString('en-IN')} ${bill.unit}`],
+                                  ['Rate', `Rs. ${bill.unitRate.toLocaleString('en-IN')} / ${bill.unit}`],
+                                  ['Taxable value', `Rs. ${bill.baseAmount.toLocaleString('en-IN')}`],
+                                  ['GST', isGst ? `Rs. ${bill.gstAmount.toLocaleString('en-IN')} (CGST ${bill.cgstAmount.toLocaleString('en-IN')} + SGST ${bill.sgstAmount.toLocaleString('en-IN')})` : 'Nil'],
+                                  ['Grand total', `Rs. ${bill.totalAmount.toLocaleString('en-IN')}`],
+                                ].map(([k, v]) => (
+                                  <div key={k} className="min-w-0">
+                                    <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{k}</dt>
+                                    <dd className="text-slate-900 mt-0.5 break-words">{v}</dd>
+                                  </div>
+                                ))}
+                                <div className="col-span-2 sm:col-span-3 lg:col-span-4 min-w-0">
+                                  <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Notes</dt>
+                                  <dd className="text-slate-700 mt-0.5">{bill.notes || '—'}{bill.operator ? ` (recorded by ${bill.operator})` : ''}</dd>
+                                </div>
+                                <div className="min-w-0">
+                                  <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Invoice file</dt>
+                                  <dd className="mt-0.5">
+                                    {bill.invoiceUrl ? (
+                                      <a href={bill.invoiceUrl} target="_blank" rel="noopener noreferrer" className="text-[#23408e] font-semibold hover:underline">
+                                        {bill.invoiceFileName || 'View invoice'}
+                                      </a>
+                                    ) : (
+                                      <span className="text-slate-500">None</span>
+                                    )}
+                                  </dd>
+                                </div>
+                              </dl>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })
                 )}
               </tbody>
             </table>
           </div>
+          {filteredBills.length > RECENT_BILLS && (
+            <div className="px-4 py-2.5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>
+                {showOlderBills
+                  ? `Showing all ${filteredBills.length} bills.`
+                  : `Showing the ${RECENT_BILLS} most recent of ${filteredBills.length} bills. Totals above include all of them.`}
+              </span>
+              <button
+                id="btn-toggle-older-bills"
+                type="button"
+                onClick={() => setShowOlderBills((v) => !v)}
+                className="font-semibold text-[#23408e] hover:underline cursor-pointer"
+              >
+                {showOlderBills ? `Show only the ${RECENT_BILLS} most recent` : `Show ${filteredBills.length - RECENT_BILLS} older bills`}
+              </button>
+            </div>
+          )}
         </div>
       )}
+
+      {/* Delete bill confirmation */}
+      <AnimatePresence>
+        {deleteBillTarget && (
+          <motion.div
+            key="delete-bill-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+            onClick={() => setDeleteBillTarget(null)}
+          >
+            <motion.div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-bill-title"
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-start gap-3">
+                <span className="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 size={18} />
+                </span>
+                <div className="min-w-0">
+                  <h3 id="delete-bill-title" className="text-base font-bold text-slate-900">Delete this bill?</h3>
+                  <p className="text-sm text-slate-600 mt-1">
+                    <strong className="text-slate-900">{deleteBillTarget.billNumber}</strong> ({deleteBillTarget.date}) - {deleteBillTarget.materialName},{' '}
+                    {deleteBillTarget.quantity.toLocaleString('en-IN')} {deleteBillTarget.unit}, Rs. {deleteBillTarget.totalAmount.toLocaleString('en-IN')} from {deleteBillTarget.vendorName}.
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    {deleteBillTarget.sourceType === 'transaction'
+                      ? `The purchase entry is deleted too: the stock of ${deleteBillTarget.materialName} at ${deleteBillTarget.projectName} goes down by ${deleteBillTarget.quantity.toLocaleString('en-IN')} ${deleteBillTarget.unit}. This cannot be undone.`
+                      : 'This opening-stock bill is removed from the register. The material and its stock are not changed. This cannot be undone.'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  id="btn-cancel-delete-bill"
+                  type="button"
+                  autoFocus
+                  onClick={() => setDeleteBillTarget(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-sm font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-confirm-delete-bill"
+                  type="button"
+                  onClick={() => {
+                    onDeleteBill?.({ sourceType: deleteBillTarget.sourceType, sourceId: deleteBillTarget.sourceId });
+                    if (expandedBillId === deleteBillTarget.id) setExpandedBillId(null);
+                    setDeleteBillTarget(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* VIEW 2: Material Code Wise Breakdown */}
       {activeSubTab === 'by-code' && (

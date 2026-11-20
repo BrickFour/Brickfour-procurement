@@ -1,6 +1,6 @@
 import { useState, useMemo, FormEvent } from 'react';
 import { ContractorRecord, ContractorCategory, Project, User, ContractorBill } from '../types';
-import { Search, Filter, Plus, FileText, ArrowUpRight, HelpCircle, ShieldCheck, X, CheckCircle2, Clock, AlertTriangle, Building2, UserCheck, DollarSign } from 'lucide-react';
+import { Search, Filter, Plus, FileText, ArrowUpRight, HelpCircle, ShieldCheck, X, CheckCircle2, Clock, AlertTriangle, Building2, UserCheck, DollarSign, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface ProcurementContractsProps {
@@ -20,6 +20,7 @@ interface ProcurementContractsProps {
     }
   ) => void;
   onOpenRaiseQueryModalForContractor?: (contractorId: string, projectId: string, firmName: string) => void;
+  onDeleteContractor?: (contractorId: string) => void;
 }
 
 const CATEGORY_OPTIONS: ContractorCategory[] = [
@@ -50,7 +51,9 @@ export default function ProcurementContracts({
   onAddContractor,
   onUpdateContractorBilling,
   onOpenRaiseQueryModalForContractor,
+  onDeleteContractor,
 }: ProcurementContractsProps) {
+  const [deleteTarget, setDeleteTarget] = useState<ContractorRecord | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<ContractorCategory | 'All'>('All');
   const [isAddContractorOpen, setIsAddContractorOpen] = useState(false);
@@ -439,6 +442,17 @@ export default function ProcurementContracts({
                           >
                             <HelpCircle size={13} /> Query
                           </button>
+                          {onDeleteContractor && (
+                            <button
+                              id={`btn-delete-contractor-${c.id}`}
+                              onClick={() => setDeleteTarget(c)}
+                              aria-label={`Delete ${c.firmName}`}
+                              title="Delete this contract"
+                              className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 cursor-pointer transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                         {c.statusReason && (
                           <p className="text-[11px] text-slate-500 mt-1.5 max-w-[220px] mx-auto truncate" title={c.statusReason}>
@@ -454,6 +468,67 @@ export default function ProcurementContracts({
           </table>
         </div>
       </div>
+
+      {/* Delete confirmation */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <motion.div
+            key="delete-contractor-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+            onClick={() => setDeleteTarget(null)}
+          >
+            <motion.div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-contractor-title"
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-start gap-3">
+                <span className="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 size={18} />
+                </span>
+                <div className="min-w-0">
+                  <h3 id="delete-contractor-title" className="text-base font-bold text-slate-900">Delete this contract?</h3>
+                  <p className="text-sm text-slate-600 mt-1">
+                    <strong className="text-slate-900">{deleteTarget.firmName}</strong> ({deleteTarget.category}, {deleteTarget.projectName}) and its billing history
+                    will be removed. The contract value of {fmtCurrency(deleteTarget.totalEstimatedBilling)} will no longer count towards the project estimation cost.
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">This cannot be undone.</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  id="btn-cancel-delete-contractor"
+                  type="button"
+                  autoFocus
+                  onClick={() => setDeleteTarget(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-sm font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-confirm-delete-contractor"
+                  type="button"
+                  onClick={() => {
+                    onDeleteContractor?.(deleteTarget.id);
+                    setDeleteTarget(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* MODAL 1: ADD CONTRACTOR MODAL */}
       <AnimatePresence>

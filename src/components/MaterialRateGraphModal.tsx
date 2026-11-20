@@ -117,7 +117,7 @@ export function getPurchaseHistory(material: Material, transactions: InventoryTr
   }
 
   const purchases = points.filter((p) => !isOpeningPoint(p));
-  if (purchases.length === 0) return [];
+  if (purchases.length === 0) return points.filter(isOpeningPoint);
 
   // Opening stock that was on hand before the first recorded purchase (catalogue stock)
   if (!points.some(isOpeningPoint)) {
@@ -348,14 +348,15 @@ export default function MaterialRateGraphModal({
   const [isPredicting, setIsPredicting] = useState(false);
   const [predictionData, setPredictionData] = useState<FutureRatePredictionResult | null>(null);
   const [predictionError, setPredictionError] = useState<string | null>(null);
-  const clientPredictionCacheRef = useRef<Record<string, FutureRatePredictionResult>>({});
+  const [predictionSavedAt, setPredictionSavedAt] = useState<string | null>(null);
 
   // Real purchases (opening stock + invoices). Empty when nothing has been bought yet.
   const purchaseHistory = useMemo(() => {
     if (!material) return [];
     return getPurchaseHistory(material, transactions);
   }, [material, transactions]);
-  const isEstimated = purchaseHistory.length === 0;
+  // No purchase invoices yet (only an opening/current rate, or nothing at all)
+  const isEstimated = !purchaseHistory.some((p) => !isOpeningPoint(p));
 
   // Estimated market curve ending at the current rate (long-term trend reference)
   const estimatedHistory = useMemo(() => {
@@ -364,8 +365,24 @@ export default function MaterialRateGraphModal({
     return generateDefaultRateHistory(latest ? { ...material, unitCost: latest.rate } : material);
   }, [material, purchaseHistory]);
 
-  // What the graph and ledger show: actual purchases when there are any, otherwise the estimate
-  const sortedHistory = isEstimated ? estimatedHistory : purchaseHistory;
+  // What the graph and ledger show: real purchases; otherwise the current rate only (no made-up history);
+  // nothing at all when the material has no rate yet
+  const sortedHistory = useMemo<RateHistoryPoint[]>(() => {
+    if (!material) return [];
+    if (purchaseHistory.length) return purchaseHistory;
+    if ((material.unitCost || 0) > 0) {
+      return [{
+        id: `current-${material.id}`,
+        date: localIsoDate(new Date()),
+        rate: material.unitCost,
+        quantity: material.currentStock || undefined,
+        vendorName: material.vendorName,
+        notes: 'Current rate - no purchases recorded yet',
+      }];
+    }
+    return [];
+  }, [material, purchaseHistory]);
+  const noRate = sortedHistory.length === 0;
 
   // Historical Chart data with formatted date and month
   const historicalChartData = useMemo(() => {
@@ -378,9 +395,9 @@ export default function MaterialRateGraphModal({
   }, [sortedHistory, isEstimated]);
 
   // Headline figures from the series shown
-  const latestPt: Partial<RateHistoryPoint> = sortedHistory[sortedHistory.length - 1] || { rate: material?.unitCost || 100, date: '' };
+  const latestPt: Partial<RateHistoryPoint> = sortedHistory[sortedHistory.length - 1] || { rate: material?.unitCost || 0, date: '' };
   const firstPt = sortedHistory[0] || latestPt;
-  const currentRate = latestPt.rate || material?.unitCost || 100;
+  const currentRate = latestPt.rate || material?.unitCost || 0;
   const initialRate = firstPt.rate || currentRate;
 
   const priceDiff = round2(currentRate - initialRate);
@@ -405,7 +422,7 @@ export default function MaterialRateGraphModal({
   }) || trendSeries[0] || { rate: currentRate };
   const recent1YrIncrementPct = oneYearAgoPt.rate > 0 ? ((currentRate - oneYearAgoPt.rate) / oneYearAgoPt.rate) * 100 : annualizedCAGR;
 
-  const allRates = sortedHistory.map((pt) => pt.rate);
+  const allRates = sortedHistory.length ? sortedHistory.map((pt) => pt.rate) : [0];
   const highestRate = Math.max(...allRates, currentRate);
   const lowestRate = Math.min(...allRates, currentRate);
 
@@ -420,11 +437,12 @@ export default function MaterialRateGraphModal({
 
   // Baseline future predictions from the current rate and the long-term trend
   const baselinePredictions = useMemo(() => {
-    if (!material) return null;
+    if (!material || currentRate <= 0) return null;
     return calculateFuturePredictionsFromHistory(material, currentRate, annualizedCAGR);
   }, [material, currentRate, annualizedCAGR]);
 
-  const activePredictionData = predictionData || baselinePredictions;
+  // Shown only after the user asks for it (web research runs once per material, then it is reused)
+  const activePredictionData = predictionData;
 
   // Future Prediction Chart Data based on the analyzed past 3 years increment graph
   const futureChartData = useMemo(() => {
@@ -490,17 +508,12 @@ export default function MaterialRateGraphModal({
     return points;
   }, [sortedHistory, activePredictionData, currentRate, isEstimated]);
 
-  // Predict Future Rates based on Past 3-Year Increment Graph
+  // Future rates: the server searches the web (Gemini + Google Search) the first time and saves the result;
+  // later openings reuse the saved prediction. force = "Re-predict" (new search).
   const handlePredictFutureRates = async (force?: boolean, switchTab: boolean = true) => {
     if (!material) return;
-    const cacheKey = `${material.id}_${currentRate}_cagr_${annualizedCAGR.toFixed(1)}`;
-
-    // Check client cache unless explicitly forced
-    if (!force && clientPredictionCacheRef.current[cacheKey]) {
-      setPredictionData(clientPredictionCacheRef.current[cacheKey]);
-      if (switchTab) {
-        setActiveGraphTab('future');
-      }
+    if (currentRate <= 0) {
+      if (switchTab) setActiveGraphTab('future');
       return;
     }
 
@@ -521,6 +534,8 @@ export default function MaterialRateGraphModal({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          materialId: material.id,
+          force: !!force,
           materialName: material.name,
           unit: material.unit,
           category: material.category,
@@ -535,15 +550,17 @@ export default function MaterialRateGraphModal({
         throw new Error(data.error || 'Failed to generate future rate predictions');
       }
 
-      clientPredictionCacheRef.current[cacheKey] = data.data;
       setPredictionData(data.data);
+      setPredictionSavedAt(data.savedAt || null);
       if (switchTab) {
         setActiveGraphTab('future');
       }
     } catch (err: any) {
-      console.warn('Prediction error, falling back to 3-year historical graph model:', err);
+      console.warn('Prediction error, using the material trend instead:', err);
       if (baselinePredictions) {
-        setPredictionData(baselinePredictions);
+        setPredictionData({ ...baselinePredictions, basis: 'trend' });
+        setPredictionSavedAt(null);
+        setPredictionError('Live market search is unavailable right now - showing a projection from this material\'s price trend.');
       }
       if (switchTab) {
         setActiveGraphTab('future');
@@ -553,11 +570,13 @@ export default function MaterialRateGraphModal({
     }
   };
 
-  // Auto-fetch values in background whenever modal opens and always default to historical graph tab
+  // Opening the window shows the purchase history; nothing is searched until Future Prediction is opened
   useEffect(() => {
     if (isOpen && material) {
       setActiveGraphTab('historical');
-      handlePredictFutureRates(false, false);
+      setPredictionData(null);
+      setPredictionSavedAt(null);
+      setPredictionError(null);
     }
   }, [isOpen, material?.id]);
 
@@ -601,14 +620,14 @@ export default function MaterialRateGraphModal({
           {/* Current Rate */}
           <div className="bg-slate-800/60 px-2.5 py-1.5 rounded-lg border border-slate-700/50 flex flex-col justify-between">
             <p className="text-[9px] font-bold uppercase tracking-tight text-slate-400 flex items-center gap-1 truncate">
-              <DollarSign size={10} className="text-emerald-400 shrink-0" /> Current Bought Rate
+              <DollarSign size={10} className="text-emerald-400 shrink-0" /> {isEstimated ? 'Current Rate' : 'Current Bought Rate'}
             </p>
             <p className="text-xs sm:text-sm font-black text-white mt-0.5 truncate">
-              Rs. {currentRate.toLocaleString('en-IN')}{' '}
-              <span className="text-[10px] font-normal text-slate-400">/{material.unit}</span>
+              {noRate ? 'Not purchased yet' : <>Rs. {currentRate.toLocaleString('en-IN')}{' '}
+              <span className="text-[10px] font-normal text-slate-400">/{material.unit}</span></>}
             </p>
             <div className="flex items-center justify-between text-[9px] text-slate-400 font-medium truncate mt-0.5">
-              <span className="truncate">Vendor: <span className="text-slate-300">{latestPt.vendorName || material.vendorName || 'Authorized Vendor'}</span></span>
+              <span className="truncate">Vendor: <span className="text-slate-300">{latestPt.vendorName || material.vendorName || '—'}</span></span>
               {latestPt.sourceUrl && (
                 <a
                   href={latestPt.sourceUrl}
@@ -635,12 +654,11 @@ export default function MaterialRateGraphModal({
                 }`}
               >
                 {isUp ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                {isUp ? '+' : ''}Rs. {Math.abs(priceDiff).toLocaleString('en-IN')} ({isUp ? '+' : ''}{percentChange.toFixed(1)}%)
+                {isEstimated ? 'No purchases yet' : <>{isUp ? '+' : ''}Rs. {Math.abs(priceDiff).toLocaleString('en-IN')} ({isUp ? '+' : ''}{percentChange.toFixed(1)}%)</>}
               </span>
             </div>
             <p className="text-[9px] text-slate-400 font-medium truncate mt-0.5">
-              From Rs. {initialRate.toLocaleString('en-IN')}
-              {isEstimated ? ' (est. 3 yrs ago)' : firstPt.date ? ` on ${formatDateFull(firstPt.date)}` : ''}
+              {isEstimated ? 'Trend starts with your first purchase' : <>From Rs. {initialRate.toLocaleString('en-IN')}{firstPt.date ? ` on ${formatDateFull(firstPt.date)}` : ''}</>}
             </p>
           </div>
 
@@ -720,11 +738,8 @@ export default function MaterialRateGraphModal({
                   <button
                     type="button"
                     onClick={() => {
-                      if (!activePredictionData) {
-                        handlePredictFutureRates(false, true);
-                      } else {
-                        setActiveGraphTab('future');
-                      }
+                      setActiveGraphTab('future');
+                      if (!activePredictionData && !isPredicting) handlePredictFutureRates(false, true);
                     }}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
                       activeGraphTab === 'future'
@@ -738,7 +753,7 @@ export default function MaterialRateGraphModal({
                   <button
                     type="button"
                     onClick={() => {
-                      if (!activePredictionData) {
+                      if (!activePredictionData && !isPredicting) {
                         handlePredictFutureRates(false, false);
                       }
                       setActiveGraphTab('dual');
@@ -758,7 +773,7 @@ export default function MaterialRateGraphModal({
                   id="btn-predict-future"
                   type="button"
                   onClick={() => handlePredictFutureRates(true, true)}
-                  disabled={isPredicting}
+                  disabled={isPredicting || noRate}
                   className="flex items-center justify-center gap-1.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-600 text-white text-xs font-black px-3 py-1.5 rounded-xl cursor-pointer transition-all shadow-xs disabled:opacity-60"
                   title="Predict material rate for 1M, 3M, 6M, 1Y, 2Y, 3Y using live market search"
                 >
@@ -793,8 +808,17 @@ export default function MaterialRateGraphModal({
               )}
             </AnimatePresence>
 
+            {/* Not purchased and no rate: nothing to plot or predict */}
+            {noRate && (
+              <div id="rate-graph-not-purchased" className="h-56 flex flex-col items-center justify-center text-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50">
+                <TrendingUp size={28} className="text-slate-300" />
+                <p className="text-sm font-semibold text-slate-800">You have not purchased this material yet.</p>
+                <p className="text-xs text-slate-500 max-w-sm">The rate graph and the future prediction start with the first purchase (or a rate entered when the material is added or uploaded).</p>
+              </div>
+            )}
+
             {/* CHART VIEW 1: Historical Bought Values Graph (Default) */}
-            {activeGraphTab === 'historical' && (
+            {!noRate && activeGraphTab === 'historical' && (
               <div className="h-64 sm:h-72 w-full pt-2">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={historicalChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
@@ -832,7 +856,7 @@ export default function MaterialRateGraphModal({
                                 📅 {data.fullDateStr} ({data.displayDate})
                               </p>
                               <p className="text-sm font-black text-white">
-                                {isEstimated ? 'Estimated Rate' : 'Bought Rate'}: Rs. {data.rate.toLocaleString('en-IN')} / {material.unit}
+                                {isEstimated ? 'Current Rate' : 'Bought Rate'}: Rs. {data.rate.toLocaleString('en-IN')} / {material.unit}
                               </p>
                               {!isEstimated && (
                                 <p className="text-[10px] text-slate-400">excl. GST, incl. freight &amp; loading</p>
@@ -876,7 +900,7 @@ export default function MaterialRateGraphModal({
             )}
 
             {/* CHART VIEW 2: AI Future Rate Prediction Graph (Market Search Engine) */}
-            {activeGraphTab === 'future' && (
+            {!noRate && activeGraphTab === 'future' && (
               <div className="space-y-4">
                 {!activePredictionData && !isPredicting ? (
                   <div className="bg-purple-50/60 border border-purple-200 rounded-2xl p-8 text-center space-y-3">
@@ -913,6 +937,20 @@ export default function MaterialRateGraphModal({
                   </div>
                 ) : (
                   <>
+                    <p id="prediction-basis" className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full border font-semibold ${activePredictionData?.basis === 'web' ? 'bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                        {activePredictionData?.basis === 'web' ? 'Live market research (Gemini + Google Search)' : 'Projection from price trend'}
+                      </span>
+                      <span>
+                        {predictionSavedAt ? `Researched ${new Date(predictionSavedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} - saved; click Re-predict Rates for a new search.` : 'Not saved.'}
+                      </span>
+                      {activePredictionData?.growthNext12MonthsPct !== undefined && (
+                        <span>Next 12 months: {activePredictionData.growthNext12MonthsPct > 0 ? '+' : ''}{activePredictionData.growthNext12MonthsPct}%</span>
+                      )}
+                    </p>
+                    {activePredictionData?.macroSummary && (
+                      <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{activePredictionData.macroSummary}</p>
+                    )}
                     {/* Prediction Area Chart without driver box */}
                     <div className="h-64 sm:h-72 w-full pt-2">
                       <ResponsiveContainer width="100%" height="100%">
@@ -989,7 +1027,7 @@ export default function MaterialRateGraphModal({
             )}
 
             {/* CHART VIEW 3: Dual View (Historical Purchases + Future Predictions) */}
-            {activeGraphTab === 'dual' && (
+            {!noRate && activeGraphTab === 'dual' && (
               <div className="space-y-3">
                 <div className="h-64 sm:h-72 w-full pt-2">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1103,6 +1141,11 @@ export default function MaterialRateGraphModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
+                  {noRate && (
+                    <tr>
+                      <td colSpan={6} className="py-6 px-3 text-center text-slate-500">No purchases recorded for this material yet.</td>
+                    </tr>
+                  )}
                   {sortedHistory
                     .slice()
                     .reverse()

@@ -1,4 +1,4 @@
-import { useState, useMemo, FormEvent, useEffect } from 'react';
+import { useState, useMemo, FormEvent, useEffect, Fragment } from 'react';
 import { InternalTransferRecord, Project, Material, User } from '../types';
 import {
   Search,
@@ -22,6 +22,10 @@ import {
   Check,
   ArrowUpRight,
   ArrowDownLeft,
+  Trash2,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -39,6 +43,7 @@ interface InternalTransferProps {
     photoFileName?: string,
     notes?: string
   ) => void;
+  onDeleteTransfer?: (transferId: string) => void;
 }
 
 const CATEGORY_LIST = [
@@ -72,7 +77,10 @@ export default function InternalTransfer({
   currentUser,
   onAddTransfer,
   onUpdateTransferStatus,
+  onDeleteTransfer,
 }: InternalTransferProps) {
+  const [deleteTarget, setDeleteTarget] = useState<InternalTransferRecord | null>(null);
+  const [expandedTransferId, setExpandedTransferId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedStatus, setSelectedStatus] = useState<string>('All');
@@ -335,7 +343,7 @@ export default function InternalTransfer({
     if (actionTransfer?.id === transfer.id) setActionTransfer(null);
 
     setSuccessToast(
-      `✓ Material "${transfer.materialName}" (${transfer.quantity} ${transfer.unit}) received at ${transfer.inwardProjectName}! Added to Procurement and Contracts stock & estimation cost updated.`
+      `✓ Material "${transfer.materialName}" (${transfer.quantity} ${transfer.unit}) received at ${transfer.inwardProjectName}! Added to Procurements stock & estimation cost updated.`
     );
     setTimeout(() => setSuccessToast(null), 6000);
   };
@@ -540,153 +548,161 @@ export default function InternalTransfer({
           <table className="w-full text-left text-sm border-collapse">
             <thead>
               <tr className="bg-[#23408e] text-white text-xs font-semibold uppercase tracking-wide">
-                <th className="px-3 py-3 text-center w-12">Sr. No.</th>
-                <th className="px-3 py-3 min-w-[170px]">Material / Description</th>
-                <th className="px-3 py-3 min-w-[110px]">Category</th>
-                <th className="px-3 py-3 min-w-[130px]">Outward From</th>
-                <th className="px-3 py-3 min-w-[130px]">Inward To</th>
-                <th className="px-3 py-3 text-right min-w-[90px]">Quantity</th>
-                <th className="px-3 py-3 text-center min-w-[80px]">Unit</th>
-                <th className="px-3 py-3 text-right min-w-[90px]">Rate (Rs)</th>
-                <th className="px-3 py-3 text-right min-w-[110px]">Amount (Rs)</th>
-                <th className="px-3 py-3 text-center min-w-[200px]">Action</th>
+                <th className="px-3 py-3 w-8" aria-label="Details" />
+                <th className="px-3 py-3 min-w-[200px]">Material</th>
+                <th className="px-3 py-3 min-w-[240px]">From → To</th>
+                <th className="px-3 py-3 text-right min-w-[100px]">Quantity</th>
+                <th className="px-3 py-3 text-right min-w-[110px]">Amount</th>
+                <th className="px-3 py-3 min-w-[140px]">Status</th>
+                <th className="px-3 py-3 text-right min-w-[150px]">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredTransfers.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-10 text-center text-sm text-slate-500">
+                  <td colSpan={7} className="p-10 text-center text-sm text-slate-500">
                     No internal material transfer records found.
                   </td>
                 </tr>
               ) : (
-                filteredTransfers.map((t, idx) => {
+                filteredTransfers.map((t) => {
                   const calculatedAmount = t.quantity * t.rate;
                   const isPendingInward = (t.status === 'Dispatched' || t.status === 'In Transit') && selectedProjectId === t.inwardProjectId;
+                  const isOpen = expandedTransferId === t.id;
+                  const openUpdate = () => {
+                    setActionTransfer(t);
+                    setActionStatus(t.status);
+                    setActionNotes(t.notes || '');
+                    setActionPhotoUrl(t.photoUrl || '');
+                    setActionPhotoFileName(t.photoFileName || '');
+                  };
+                  const toggle = () => setExpandedTransferId(isOpen ? null : t.id);
+                  const iconBtn = 'p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-[#23408e] hover:border-[#c9d6f2] hover:bg-[#f5f8fd] cursor-pointer transition-colors';
 
                   return (
-                    <tr key={t.id} className={`border-b border-slate-100 last:border-0 hover:bg-[#f5f8fd] transition-colors align-top ${isPendingInward ? 'bg-amber-50/40' : ''}`}>
-                      <td className="px-3 py-3 text-center text-xs text-slate-500">{idx + 1}</td>
-
-                      <td className="px-3 py-3">
-                        <p className="font-semibold text-slate-900">{t.materialName}</p>
-                        <div className="flex flex-wrap items-center gap-1.5 mt-0.5 text-[11px] text-slate-500">
-                          <span>{t.transferDate}</span>
-                          {t.vehicleNumber && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded border bg-slate-50 border-slate-200 text-slate-600 font-mono text-[10px]">
-                              {t.vehicleNumber}
-                            </span>
-                          )}
-                        </div>
-                        {t.notes && (
-                          <p className="text-[11px] text-slate-500 mt-1 max-w-[190px] truncate" title={t.notes}>
-                            Note: {t.notes}
-                          </p>
-                        )}
-                      </td>
-
-                      <td className="px-3 py-3">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-slate-100 text-slate-700 border-slate-200 whitespace-nowrap">
-                          {t.category}
-                        </span>
-                      </td>
-
-                      <td className="px-3 py-3 text-slate-700">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <ArrowUpRight size={14} className="text-rose-500 shrink-0" aria-label="Outward" />
-                          <span className="truncate max-w-[120px]" title={t.outwardProjectName}>{t.outwardProjectName}</span>
-                        </div>
-                      </td>
-
-                      <td className="px-3 py-3 text-slate-700">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <ArrowDownLeft size={14} className="text-emerald-600 shrink-0" aria-label="Inward" />
-                          <span className="truncate max-w-[120px]" title={t.inwardProjectName}>{t.inwardProjectName}</span>
-                        </div>
-                      </td>
-
-                      <td className="px-3 py-3 text-right font-medium text-slate-900">
-                        {t.quantity.toLocaleString('en-IN')}
-                      </td>
-
-                      <td className="px-3 py-3 text-center text-slate-600">{t.unit}</td>
-
-                      <td className="px-3 py-3 text-right text-slate-800">
-                        Rs. {t.rate.toLocaleString('en-IN')}
-                      </td>
-
-                      <td className="px-3 py-3 text-right font-semibold text-slate-900">
-                        {fmtCurr(calculatedAmount)}
-                      </td>
-
-                      <td className="px-3 py-3 text-center">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-center">{renderStatusBadge(t.status)}</div>
-                          <div className="flex flex-wrap items-center justify-center gap-1.5">
+                    <Fragment key={t.id}>
+                      <tr
+                        id={`transfer-row-${t.id}`}
+                        onClick={toggle}
+                        className={`border-b border-slate-100 hover:bg-[#f5f8fd] transition-colors cursor-pointer ${isOpen ? 'bg-[#f5f8fd]' : isPendingInward ? 'bg-amber-50/40' : ''}`}
+                      >
+                        <td className="px-3 py-3 text-slate-400">
+                          <button
+                            type="button"
+                            aria-expanded={isOpen}
+                            aria-label={isOpen ? 'Hide details' : 'Show details'}
+                            onClick={(e) => { e.stopPropagation(); toggle(); }}
+                            className="cursor-pointer hover:text-slate-700"
+                          >
+                            {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          <p className="font-semibold text-slate-900">{t.materialName}</p>
+                          <p className="text-[11px] text-slate-500 mt-0.5">{t.transferDate}</p>
+                        </td>
+                        <td className="px-3 py-3 text-slate-700">
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <span className="truncate max-w-[140px]" title={t.outwardProjectName}>{t.outwardProjectName}</span>
+                            <ArrowRight size={13} className="text-slate-400 shrink-0" aria-label="to" />
+                            <span className="truncate max-w-[140px]" title={t.inwardProjectName}>{t.inwardProjectName}</span>
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          <span className="font-medium text-slate-900">{t.quantity.toLocaleString('en-IN')}</span>{' '}
+                          <span className="text-xs text-slate-500">{t.unit}</span>
+                        </td>
+                        <td className="px-3 py-3 text-right font-semibold text-slate-900 whitespace-nowrap">{fmtCurr(calculatedAmount)}</td>
+                        <td className="px-3 py-3">{renderStatusBadge(t.status)}</td>
+                        <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
                             {(t.status === 'Dispatched' || t.status === 'In Transit') && (
                               <button
                                 id={`btn-receive-verify-${t.id}`}
                                 onClick={() => handleConfirmReceived(t)}
-                                className="px-2.5 py-1.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                title="Click to receive & add stock to Procurement and Contracts"
+                                className="px-2.5 py-1.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                title="Receive and add the stock to Procurements"
                               >
-                                <PackageCheck size={12} />
-                                Receive &amp; Add Stock
+                                <PackageCheck size={13} /> Receive
                               </button>
                             )}
-
-                            <button
-                              id={`btn-manage-status-${t.id}`}
-                              onClick={() => {
-                                setActionTransfer(t);
-                                setActionStatus(t.status);
-                                setActionNotes(t.notes || '');
-                                setActionPhotoUrl(t.photoUrl || '');
-                                setActionPhotoFileName(t.photoFileName || '');
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg border border-[#23408e] text-[#23408e] bg-white hover:bg-[#f5f8fd] text-xs font-semibold cursor-pointer"
-                            >
-                              Update
+                            <button id={`btn-manage-status-${t.id}`} onClick={openUpdate} aria-label="Update status" title="Update status or add a picture" className={iconBtn}>
+                              <Pencil size={14} />
                             </button>
-
                             {t.photoUrl ? (
                               <button
                                 id={`btn-view-photo-${t.id}`}
-                                onClick={() =>
-                                  setPreviewPhoto({
-                                    url: t.photoUrl!,
-                                    fileName: t.photoFileName,
-                                    title: `${t.materialName} Delivery Proof`,
-                                    transfer: t,
-                                  })
-                                }
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                title="View supporting dispatch/receipt picture"
+                                onClick={() => setPreviewPhoto({ url: t.photoUrl!, fileName: t.photoFileName, title: `${t.materialName} Delivery Proof`, transfer: t })}
+                                aria-label="View picture"
+                                title="View dispatch / receipt picture"
+                                className={iconBtn}
                               >
-                                <Camera size={12} />
-                                Picture
+                                <Camera size={14} />
                               </button>
                             ) : (
+                              <button id={`btn-upload-photo-${t.id}`} onClick={openUpdate} aria-label="Add picture" title="Upload a picture or gate pass" className={iconBtn}>
+                                <Upload size={14} />
+                              </button>
+                            )}
+                            {onDeleteTransfer && (
                               <button
-                                id={`btn-upload-photo-${t.id}`}
-                                onClick={() => {
-                                  setActionTransfer(t);
-                                  setActionStatus(t.status);
-                                  setActionNotes(t.notes || '');
-                                  setActionPhotoUrl(t.photoUrl || '');
-                                  setActionPhotoFileName(t.photoFileName || '');
-                                }}
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                title="Upload supporting picture or gate pass"
+                                id={`btn-delete-transfer-${t.id}`}
+                                onClick={() => setDeleteTarget(t)}
+                                aria-label={`Remove transfer of ${t.materialName}`}
+                                title="Remove this transfer"
+                                className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 cursor-pointer transition-colors"
                               >
-                                <Upload size={12} />
-                                + Image
+                                <Trash2 size={14} />
                               </button>
                             )}
                           </div>
-                        </div>
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+
+                      {isOpen && (
+                        <tr id={`transfer-details-${t.id}`} className="bg-[#f5f8fd] border-b border-slate-200">
+                          <td />
+                          <td colSpan={6} className="px-3 pb-4 pt-1">
+                            <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-3 text-sm">
+                              {[
+                                ['Category', t.category],
+                                ['Rate', `Rs. ${t.rate.toLocaleString('en-IN')} / ${t.unit}`],
+                                ['Outward from', t.outwardProjectName],
+                                ['Inward to', t.inwardProjectName],
+                                ['Vehicle no.', t.vehicleNumber || '—'],
+                                ['Driver / contact', t.driverName || '—'],
+                                ['Transfer date', t.transferDate],
+                                ['Recorded on', t.createdAt || '—'],
+                              ].map(([k, v]) => (
+                                <div key={k} className="min-w-0">
+                                  <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{k}</dt>
+                                  <dd className="text-slate-900 mt-0.5 break-words">{v}</dd>
+                                </div>
+                              ))}
+                              <div className="col-span-2 sm:col-span-3 lg:col-span-4 min-w-0">
+                                <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Notes</dt>
+                                <dd className="text-slate-700 mt-0.5 whitespace-pre-wrap">{t.notes || '—'}</dd>
+                              </div>
+                              <div className="min-w-0">
+                                <dt className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Picture</dt>
+                                <dd className="mt-0.5">
+                                  {t.photoUrl ? (
+                                    <button
+                                      onClick={() => setPreviewPhoto({ url: t.photoUrl!, fileName: t.photoFileName, title: `${t.materialName} Delivery Proof`, transfer: t })}
+                                      className="text-[#23408e] font-semibold hover:underline cursor-pointer"
+                                    >
+                                      {t.photoFileName || 'View picture'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-slate-500">None</span>
+                                  )}
+                                </dd>
+                              </div>
+                            </dl>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })
               )}
@@ -694,6 +710,69 @@ export default function InternalTransfer({
           </table>
         </div>
       </div>
+
+      {/* Remove confirmation */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <motion.div
+            key="delete-transfer-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+            onClick={() => setDeleteTarget(null)}
+          >
+            <motion.div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-transfer-title"
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-start gap-3">
+                <span className="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 size={18} />
+                </span>
+                <div className="min-w-0">
+                  <h3 id="delete-transfer-title" className="text-base font-bold text-slate-900">Remove this transfer?</h3>
+                  <p className="text-sm text-slate-600 mt-1">
+                    <strong className="text-slate-900">{deleteTarget.materialName}</strong> ({deleteTarget.quantity.toLocaleString('en-IN')} {deleteTarget.unit},{' '}
+                    {fmtCurr(deleteTarget.quantity * deleteTarget.rate)}) from {deleteTarget.outwardProjectName} to {deleteTarget.inwardProjectName}, dated {deleteTarget.transferDate}, will be removed from the transfer register.
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Stock already moved between the sites is not changed. This cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  id="btn-cancel-delete-transfer"
+                  type="button"
+                  autoFocus
+                  onClick={() => setDeleteTarget(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 text-sm font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-confirm-delete-transfer"
+                  type="button"
+                  onClick={() => {
+                    onDeleteTransfer?.(deleteTarget.id);
+                    setDeleteTarget(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 size={14} /> Remove
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* MODAL 1: RECORD NEW INTERNAL TRANSFER */}
       <AnimatePresence>
@@ -1143,7 +1222,7 @@ export default function InternalTransfer({
                 </div>
 
                 <p className="text-[11px] text-slate-600">
-                  Clicking "Received & Verified" will automatically add/increment this material in your <strong>Procurement and Contracts</strong> stock and adjust your site's estimation cost.
+                  Clicking "Received & Verified" will automatically add/increment this material in your <strong>Procurements</strong> stock and adjust your site's estimation cost.
                 </p>
               </div>
 

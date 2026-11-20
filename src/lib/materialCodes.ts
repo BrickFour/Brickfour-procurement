@@ -1,4 +1,4 @@
-import { Material, InventoryTransaction } from '../types';
+import type { Material, InventoryTransaction } from '../types';
 
 export interface StandardMaterialGroup {
   code: string;

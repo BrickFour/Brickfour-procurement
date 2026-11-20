@@ -64,6 +64,8 @@ export interface Material {
   gstAmount?: number; // Tax portion
   baseAmount?: number; // Pre-tax taxable base
   vendorGstin?: string;
+  /** The opening-stock bill of this material was deleted from the GST & URD register */
+  baseBillRemoved?: boolean;
 }
 
 export interface InventoryTransaction {
@@ -244,10 +246,15 @@ export interface FutureRatePredictionResult {
   unit: string;
   currentRate: number;
   asOfDate: string;
-  forecastConfidence: 'High' | 'Moderate' | 'Provisional';
+  forecastConfidence: 'High' | 'Medium' | 'Low' | 'Moderate' | 'Provisional';
   macroSummary: string;
   predictions: FutureRatePredictionPoint[];
   sources: { title: string; url: string }[];
+  /** 'web' = from live market research (Gemini + Google Search); 'trend' = projected from the material's own trend */
+  basis?: 'web' | 'trend';
+  growthNext12MonthsPct?: number;
+  growthLongTermPctPerYear?: number;
+  marketRateToday?: number;
 }
 
 export type PRStatus = 'Draft' | 'Enquiry Sent' | 'Quotes Received' | 'Under Comparison' | 'Shortlisted' | 'Awarded' | 'Closed';

@@ -1,6 +1,8 @@
 import { useState, useMemo, FormEvent, Fragment, ReactNode } from 'react';
-import { Material, MaterialCategory, Project, User, InventoryTransaction, RateHistoryPoint, BillType } from '../types';
-import { Search, Filter, Plus, Trash2, ArrowUpRight, ArrowDownLeft, AlertCircle, AlertTriangle, Bell, X, HelpCircle, Lock, TrendingUp, Hash, Receipt, FileText, Check, ShoppingCart, BookOpen } from 'lucide-react';
+import { Material, MaterialCategory, Project, User, InventoryTransaction, RateHistoryPoint, BillType, Vendor, ProjectRequirement, VendorQuotation } from '../types';
+import { Search, Filter, Plus, Trash2, ArrowUpRight, ArrowDownLeft, AlertCircle, AlertTriangle, Bell, X, HelpCircle, Lock, TrendingUp, Hash, Receipt, FileText, Check, ShoppingCart, BookOpen, Upload, Users } from 'lucide-react';
+import BulkUploadModal from './BulkUploadModal';
+import type { MaterialImportPlan, VendorImportPlan } from '../lib/bulkImport';
 import { motion, AnimatePresence } from 'motion/react';
 import MaterialRateGraphModal from './MaterialRateGraphModal';
 import { resolveMaterialCode, STANDARD_MATERIAL_GROUPS, formatMaterialCode } from '../lib/materialCodes';
@@ -54,6 +56,17 @@ interface MaterialListProps {
   onToggleLowStockFilter?: (enable: boolean) => void;
   stockFilterMode?: 'all' | 'low' | 'reorder';
   onStockFilterChange?: (mode: 'all' | 'low' | 'reorder') => void;
+  /** Admin only: data and handlers for bulk material / vendor upload */
+  bulkUpload?: {
+    projects: Project[];
+    materials: Material[];
+    transactions: InventoryTransaction[];
+    vendors: Vendor[];
+    prs: ProjectRequirement[];
+    quotes: VendorQuotation[];
+    onApplyMaterials: (plan: MaterialImportPlan) => void;
+    onApplyVendors: (plan: VendorImportPlan) => void;
+  };
 }
 
 const CATEGORIES: MaterialCategory[] = ['Structural', 'Finishing', 'Masonry', 'Plumbing', 'Electrical', 'Others'];
@@ -86,7 +99,9 @@ export default function MaterialList({
   onToggleLowStockFilter,
   stockFilterMode,
   onStockFilterChange,
+  bulkUpload,
 }: MaterialListProps) {
+  const [bulkKind, setBulkKind] = useState<'materials' | 'vendors' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<MaterialCategory | 'All'>('All');
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -354,7 +369,7 @@ export default function MaterialList({
             <BookOpen size={20} />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-slate-900">Procurement &amp; Contracts</h1>
+            <h1 className="text-lg font-bold text-slate-900">Procurements</h1>
             <p className="text-xs text-slate-500">Site material catalogue: stock levels, purchase rates, on-site value, stock movements and order queries.</p>
           </div>
         </div>
@@ -374,11 +389,40 @@ export default function MaterialList({
             <Plus size={16} /> Add New Material
           </button>
         ) : (
-          <div className="px-4 py-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 text-sm font-medium inline-flex items-center gap-2 cursor-not-allowed whitespace-nowrap" title="Material additions are enabled for assigned Site Managers">
-            <Lock size={15} /> Add Material (Site Manager Only)
+          <div className="flex items-center gap-2 shrink-0">
+            {bulkUpload && (
+              <>
+                <button
+                  id="btn-bulk-upload-vendors"
+                  onClick={() => setBulkKind('vendors')}
+                  className="px-4 py-2.5 rounded-lg border border-[#23408e] text-[#23408e] bg-white hover:bg-[#f5f8fd] text-sm font-semibold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  title="Upload your vendor list (Excel/CSV) and view the vendor directory"
+                >
+                  <Users size={16} /> Bulk Upload Vendors
+                </button>
+                <button
+                  id="btn-bulk-upload-materials"
+                  onClick={() => setBulkKind('materials')}
+                  className="px-4 py-2.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  title="Upload your material list (Excel/CSV) for all sites"
+                >
+                  <Upload size={16} /> Bulk Upload Materials
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
+
+      {bulkUpload && (
+        <BulkUploadModal
+          kind={bulkKind || 'materials'}
+          isOpen={!!bulkKind}
+          onClose={() => setBulkKind(null)}
+          selectedProjectId={selectedProjectId}
+          {...bulkUpload}
+        />
+      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

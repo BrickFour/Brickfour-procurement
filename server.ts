@@ -12,6 +12,19 @@ import {
 } from './quoteExtraction.js';
 import { extractInvoiceFields, normaliseInvoice, INVOICE_KINDS } from './invoiceExtraction.js';
 import { parseCreditDays } from './src/lib/vendorComparison.js';
+import { STANDARD_MATERIAL_GROUPS } from './src/lib/materialCodes.js';
+import {
+  columnsFor,
+  BULK_MAX_ROWS,
+  BULK_MAX_FILE_BYTES,
+  MATERIAL_CATEGORIES,
+  GST_RATE_OPTIONS,
+  VENDOR_STATUSES,
+  VENDOR_SUPPLY_COLUMNS,
+  SAMPLE_MATERIAL_ROWS,
+  buildSupplyOptions,
+  buildSampleVendorRows,
+} from './src/lib/bulkImport.js';
 import {
   renderPurchaseOrderPdf,
   amountInWords,
@@ -2066,17 +2079,21 @@ Reply ONLY with valid JSON.`;
         return Math.round(val);
       };
 
-      // Unique cache key incorporating material name, base rate, and distinct 3-year CAGR
-      const cacheKey = `${(materialName || '').toLowerCase().trim()}_${(matUnit || '').toLowerCase().trim()}_${baseRate}_cagr_${annualizedCAGR.toFixed(2)}_3y_${total3YrIncrementPct.toFixed(1)}`;
-
-      // Check cache first
-      const cached = predictionCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < PREDICTION_CACHE_TTL_MS) {
-        return res.json({
-          success: true,
-          data: cached.data,
-          cached: true,
-        });
+      // Saved prediction: the web search runs once per material and is reused until "Re-predict" (force)
+      const materialId = typeof req.body?.materialId === 'string' ? req.body.materialId.slice(0, 120) : '';
+      const force = req.body?.force === true;
+      const predictionKey = materialId || `${String(materialName).toLowerCase().trim()}|${String(matUnit).toLowerCase().trim()}`;
+      let predictionsCol: any = null;
+      try {
+        predictionsCol = (await getMongoDb()).collection('rate_predictions');
+      } catch {
+        predictionsCol = null; // database unavailable: still answer, just without saving
+      }
+      if (!force && predictionsCol) {
+        const saved = await predictionsCol.findOne({ key: predictionKey }, { projection: { _id: 0 } });
+        if (saved?.data) {
+          return res.json({ success: true, data: saved.data, cached: true, savedAt: saved.savedAt });
+        }
       }
 
       // Dynamic periods array calculated directly from the material's past 3-year increment graph (CAGR)
@@ -2151,39 +2168,32 @@ Reply ONLY with valid JSON.`;
         };
       });
 
-      const prompt = `You are a Senior Construction Commodity Analyst and Quantity Surveyor for the Indian construction industry.
+      const todayLabel = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+      const prompt = `You are a construction commodity analyst for the Indian market. Today is ${todayLabel}.
 
-Analyze the procurement rate trajectory in India for construction material:
-- Material Name: "${materialName}"
+Search the web for the CURRENT market price and the PRICE OUTLOOK in India for this construction material:
+- Material: "${materialName}"
 - Category: "${matCategory}"
-- Measurement Unit: "${matUnit}"
-- Current Reference Rate: Rs. ${baseRate} / ${matUnit}
-- Site Location: "${matLoc}"
+- Unit: "${matUnit}"
+- Site location: "${matLoc}"
+- The buyer's own current rate: Rs. ${baseRate} per ${matUnit}
+- The buyer's own past trend: ${annualizedCAGR.toFixed(1)}% per year
 
-HISTORICAL 3-YEAR TRACK RECORD & INCREMENT ANALYSIS (OCTOBER 2023 - OCTOBER 2026):
-- Baseline Rate 3 Years Ago (Oct 2023): Rs. ${startRate3YrAgo} / ${matUnit}
-- Current Verified Rate Today (Oct 2026): Rs. ${baseRate} / ${matUnit}
-- Historical 3-Year Total Increment: +${total3YrIncrementPct.toFixed(1)}%
-- Annualized Compound Growth Rate (CAGR): +${annualizedCAGR.toFixed(2)}% per year
-- Recent 1-Year Momentum (Past 12 Months): +${recent1YrIncrementPct ? recent1YrIncrementPct.toFixed(1) : annualizedCAGR.toFixed(1)}%
+Use recent news, commodity indices, dealer price lists and industry forecasts (e.g. cement/steel/sand price reports, RBI/CRISIL/ICRA outlooks, input cost and demand trends).
 
-CRITICAL PREDICTION INSTRUCTION:
-Base your analysis directly on this material's unique past 3-year increment trend (+${annualizedCAGR.toFixed(2)}%/year, +${total3YrIncrementPct.toFixed(1)}% over 3 years).
-Every material in the catalog has its own distinct growth rate.
-Provide a realistic expert macro summary for India and market research sources.
-
-Return a strict JSON object:
+Return ONLY a JSON object:
 {
-  "macroSummary": "<2-3 sentence expert summary of ${materialName}'s past 3-year increment trend and projected price trajectory in India>",
-  "forecastConfidence": "High"
-}
-
-Return ONLY valid JSON.`;
+  "marketRateToday": <number: typical Indian market rate today in Rs per ${matUnit}, or null if not found>,
+  "growthNext12MonthsPct": <number: expected % change in price over the next 12 months, e.g. 4.5 or -2>,
+  "growthLongTermPctPerYear": <number: expected average % change per year over the next 3 years>,
+  "forecastConfidence": "High" | "Medium" | "Low",
+  "macroSummary": "<2-3 sentences: what drives ${materialName} prices in India now and where they are heading, citing what you found>"
+}`;
 
       let response: any = null;
       try {
         response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: GEMINI_MODEL,
           contents: prompt,
           config: {
             tools: [{ googleSearch: {} }],
@@ -2196,7 +2206,7 @@ Return ONLY valid JSON.`;
         if (!isQuota) {
           try {
             response = await ai.models.generateContent({
-              model: 'gemini-3.8-flash',
+              model: GEMINI_MODEL,
               contents: prompt,
               config: { temperature: 0.2 },
             });
@@ -2252,26 +2262,71 @@ Return ONLY valid JSON.`;
         );
       }
 
+      // Predictions from the web research: next-12-month growth for up to 1 year, long-term growth after that.
+      // Falls back to the material's own trend when the search returned no usable numbers.
+      const pctOrNull = (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n > -40 && n < 60 ? n : null;
+      };
+      const g12 = pctOrNull(parsedResult?.growthNext12MonthsPct);
+      const gLong = pctOrNull(parsedResult?.growthLongTermPctPerYear);
+      const usedWebOutlook = g12 !== null || gLong !== null;
+      const shortRate = (g12 ?? gLong ?? annualizedCAGR) / 100;
+      const longRate = (gLong ?? g12 ?? annualizedCAGR) / 100;
+      const predictions = usedWebOutlook
+        ? periodsConfig.map((cfg) => {
+            const mult =
+              cfg.months <= 12
+                ? Math.pow(1 + shortRate, cfg.months / 12)
+                : (1 + shortRate) * Math.pow(1 + longRate, (cfg.months - 12) / 12);
+            const rateVal = formatRate(baseRate * mult);
+            const pct = cfg.months === 0 ? 0 : Number((((rateVal - baseRate) / baseRate) * 100).toFixed(1));
+            const spread = cfg.months === 0 ? 0 : Math.min(0.15, 0.02 + cfg.months * 0.003);
+            return {
+              periodKey: cfg.key,
+              periodLabel: cfg.label,
+              targetDate: getFutureDateLabel(cfg.months),
+              predictedRate: rateVal,
+              minRate: formatRate(rateVal * (1 - spread)),
+              maxRate: formatRate(rateVal * (1 + spread)),
+              percentChangeVsCurrent: pct,
+              trend: pct > 0 ? ('up' as const) : pct < 0 ? ('down' as const) : ('stable' as const),
+              keyDrivers: cfg.driver,
+            };
+          })
+        : computed3YrPredictions;
+      const marketRateToday = Number(parsedResult?.marketRateToday);
+
       const predictionData = {
         materialName,
         category: matCategory,
         unit: matUnit,
         currentRate: baseRate,
         asOfDate: new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
-        forecastConfidence: parsedResult?.forecastConfidence || 'High',
+        forecastConfidence: ['High', 'Medium', 'Low'].includes(parsedResult?.forecastConfidence) ? parsedResult.forecastConfidence : usedWebOutlook ? 'Medium' : 'Low',
         macroSummary:
           parsedResult?.macroSummary ||
-          `Rate forecast for ${materialName} is computed from its past 3-year increment trend (+${total3YrIncrementPct.toFixed(1)}%, CAGR +${annualizedCAGR.toFixed(1)}%/yr) combined with regional Indian commodity and infrastructure forecasts.`,
-        predictions: computed3YrPredictions,
+          `Forecast for ${materialName} is projected from its own price trend (${annualizedCAGR.toFixed(1)}% per year); live market research was not available.`,
+        predictions,
         sources: webSources.slice(0, 4),
+        basis: usedWebOutlook ? 'web' : 'trend',
+        growthNext12MonthsPct: g12 ?? undefined,
+        growthLongTermPctPerYear: gLong ?? undefined,
+        marketRateToday: Number.isFinite(marketRateToday) && marketRateToday > 0 ? marketRateToday : undefined,
       };
 
-      // Cache the response
-      predictionCache.set(cacheKey, { timestamp: Date.now(), data: predictionData });
+      // Save so the next opening reuses it (no new search until "Re-predict")
+      const savedAt = new Date().toISOString();
+      if (predictionsCol && response) {
+        await predictionsCol
+          .updateOne({ key: predictionKey }, { $set: { key: predictionKey, materialId, materialName, unit: matUnit, data: predictionData, savedAt } }, { upsert: true })
+          .catch((e: any) => console.warn('[Predictions] Could not save prediction:', e?.message || e));
+      }
 
       return res.json({
         success: true,
         data: predictionData,
+        savedAt,
       });
     } catch {
       // Fallback grounded directly in the material's specific 3-year increment rate
@@ -2555,6 +2610,304 @@ ${context ? JSON.stringify(context, null, 2) : 'No snapshot data available.'}
         success: true,
         reply: dynamicReply,
       });
+    }
+  });
+
+  /* ---------------- Bulk upload: materials & vendors (Excel / CSV) ---------------- */
+
+  const BULK_HEADER_FILL = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FF23408E' } };
+  const styleHeader = (sheet: any) =>
+    sheet.getRow(1).eachCell((c: any) => {
+      c.fill = BULK_HEADER_FILL;
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      c.alignment = { vertical: 'middle', wrapText: true };
+    });
+
+  /** Builds the upload workbook. withSample = filled with example rows ready to upload. */
+  async function buildBulkWorkbook(kind: 'materials' | 'vendors', withSample: boolean) {
+    const cols = columnsFor(kind);
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'PRAVAH';
+    const mainName = kind === 'materials' ? 'Materials' : 'Vendors';
+    const lastRow = BULK_MAX_ROWS + 1;
+
+    // 1. Data sheet
+    const ws = wb.addWorksheet(mainName, { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = cols.map((c) => ({ header: c.header, key: c.key, width: c.width }));
+    ws.getRow(1).height = 32;
+    styleHeader(ws);
+    ws.getRow(1).eachCell((cell: any, i: number) => {
+      cell.note = cols[i - 1].note;
+    });
+    const colLetter = (key: string) => ws.getColumn(key).letter;
+    const validate = (key: string, formula: string, strict = false, message = '') =>
+      (ws as any).dataValidations.add(`${colLetter(key)}2:${colLetter(key)}${lastRow}`, {
+        type: 'list',
+        allowBlank: true,
+        formulae: [formula],
+        showErrorMessage: strict,
+        errorStyle: 'warning',
+        errorTitle: 'Not in the list',
+        error: message,
+      });
+
+    // 2. Material codes reference
+    const codes = wb.addWorksheet('Material Codes');
+    codes.columns = [
+      { header: 'Code', key: 'code', width: 8 },
+      { header: 'Group', key: 'name', width: 38 },
+      { header: 'Category', key: 'category', width: 14 },
+      { header: 'Default Unit', key: 'unit', width: 13 },
+      { header: 'Words that map to this code', key: 'keywords', width: 70 },
+    ];
+    STANDARD_MATERIAL_GROUPS.forEach((g) => codes.addRow({ code: g.code, name: g.name, category: g.category, unit: g.defaultUnit, keywords: g.keywords.join(', ') }));
+    styleHeader(codes);
+
+    if (kind === 'materials') {
+      validate('code', `"${STANDARD_MATERIAL_GROUPS.map((g) => g.code).join(',')}"`);
+      validate('category', `"${MATERIAL_CATEGORIES.join(',')}"`);
+      validate('billType', '"GST,URD"');
+      validate('gstRate', `"${GST_RATE_OPTIONS.join(',')}"`);
+      if (withSample) SAMPLE_MATERIAL_ROWS.forEach((r) => ws.addRow(r));
+    } else {
+      // Dropdown source: every material name in the app (all sites) + one "All <group>" entry per code.
+      // The sample file also lists the sample materials so it works on a fresh setup.
+      const db = await getMongoDb();
+      const dbMaterials = await db
+        .collection('materials')
+        .find({}, { projection: { _id: 0, name: 1, materialCode: 1, category: 1, materialGroup: 1 } })
+        .toArray();
+      const sampleMats = withSample
+        ? SAMPLE_MATERIAL_ROWS.map((r) => ({ name: String(r[0]), materialCode: String(r[1]), category: String(r[2]) as any }))
+        : [];
+      const options = buildSupplyOptions([...(dbMaterials as any[]), ...sampleMats]);
+      const listSheet = wb.addWorksheet('Material List');
+      listSheet.columns = [
+        { header: 'Materials Can Supply (pick these in the Vendors sheet)', key: 'label', width: 60 },
+        { header: 'Material Code', key: 'code', width: 14 },
+      ];
+      options.forEach((o) => listSheet.addRow({ label: o.label, code: o.code }));
+      styleHeader(listSheet);
+      const range = `'Material List'!$A$2:$A$${options.length + 1}`;
+      for (let i = 0; i < VENDOR_SUPPLY_COLUMNS; i++) {
+        validate(i === 0 ? 'materials' : `materials${i + 1}`, range, true, 'Pick a material from the list. Typed names are still matched automatically, including spelling mistakes.');
+      }
+      validate('status', `"${VENDOR_STATUSES.join(',')}"`);
+      validate('terms', '"Advance,15 Days,30 Days,45 Days,60 Days"');
+      if (withSample) buildSampleVendorRows(options).forEach((r) => ws.addRow(r));
+    }
+
+    // 3. Instructions
+    const ins = wb.addWorksheet('Instructions');
+    ins.columns = [{ header: 'Column', key: 'col', width: 30 }, { header: 'Required', key: 'req', width: 10 }, { header: 'What to enter', key: 'what', width: 110 }];
+    styleHeader(ins);
+    cols.forEach((c) => ins.addRow({ col: c.header.replace(' *', ''), req: c.required ? 'Yes' : 'No', what: c.note }));
+    ins.addRow({});
+    const rules =
+      kind === 'materials'
+        ? [
+            `Fill the "${mainName}" sheet: one row per material (up to ${BULK_MAX_ROWS} rows per file). Keep the header row unchanged.`,
+            'Materials are uploaded per site: choose the site in the upload window in PRAVAH (Procurements > Bulk Upload Materials).',
+            'Re-uploading is safe: a material with the same name on the same site is updated, not duplicated.',
+            'Upload materials before vendors: the vendor template lists your materials in its dropdowns.',
+            'Save as .xlsx (or .csv). Maximum file size 3 MB.',
+          ]
+        : [
+            `Fill the "${mainName}" sheet: one row per vendor (up to ${BULK_MAX_ROWS} rows per file). Keep the header row unchanged.`,
+            '"Materials Can Supply": pick from the dropdown (the "Material List" sheet = your materials + material groups). Use the extra columns for more materials.',
+            'Picking "All <group> (#code)" means the vendor is invited to RFQs for every material in that group.',
+            'Typed values are also accepted, separated by commas; spelling mistakes are corrected automatically (and with AI when needed).',
+            'Re-uploading is safe: a vendor with the same email is updated, not duplicated. Download a fresh template after uploading new materials.',
+            'Save as .xlsx (or .csv). Maximum file size 3 MB.',
+          ];
+    rules.forEach((r) => ins.addRow({ col: 'Rule', req: '', what: r }));
+    ins.getColumn('what').alignment = { wrapText: true, vertical: 'top' };
+
+    return Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+  }
+
+  const sendWorkbook = (res: express.Response, buf: Buffer, fileName: string) => {
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(buf);
+  };
+
+  // Blank template with the exact columns, dropdowns, instructions and reference lists
+  app.get('/api/bulk/template', async (req, res) => {
+    try {
+      const kind = req.query.type === 'vendors' ? 'vendors' : 'materials';
+      return sendWorkbook(res, await buildBulkWorkbook(kind, false), `pravah-${kind}-upload-template.xlsx`);
+    } catch (err) {
+      return sendError(res, err, 'Could not create the template.');
+    }
+  });
+
+  // Same workbook filled with realistic sample rows, ready to upload for a trial
+  app.get('/api/bulk/sample', async (req, res) => {
+    try {
+      const kind = req.query.type === 'vendors' ? 'vendors' : 'materials';
+      return sendWorkbook(res, await buildBulkWorkbook(kind, true), `pravah-sample-${kind}.xlsx`);
+    } catch (err) {
+      return sendError(res, err, 'Could not create the sample file.');
+    }
+  });
+
+  // AI fallback for typed "Materials Can Supply" entries the rules could not match (spelling, synonyms, Hindi/Marathi words)
+  app.post('/api/bulk/match-materials', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const items: string[] = Array.isArray(b.items)
+        ? [...new Set<string>(b.items.filter((x: unknown) => typeof x === 'string').map((x: string) => x.trim().slice(0, 120)).filter(Boolean))].slice(0, 200)
+        : [];
+      const options: { code: string; label: string }[] = Array.isArray(b.options)
+        ? b.options
+            .filter((o: any) => o && typeof o.code === 'string' && typeof o.label === 'string')
+            .slice(0, 1500)
+            .map((o: any) => ({ code: o.code.slice(0, 6), label: o.label.slice(0, 120) }))
+        : [];
+      if (!items.length || !options.length) return res.json({ success: true, matches: {} });
+      if (!process.env.GEMINI_API_KEY) return res.json({ success: true, matches: {}, ai: false });
+
+      const prompt =
+        'You map construction-material names typed by a purchase team (they may contain spelling mistakes, abbreviations, brand names or Hindi/Marathi words) ' +
+        'to the closest material in the catalogue below. Return the catalogue code for each item, or an empty code if nothing in the catalogue is a reasonable match. ' +
+        'Never invent codes.\n\nCatalogue (code | name):\n' +
+        options.map((o) => `${o.code} | ${o.label}`).join('\n') +
+        '\n\nItems:\n' +
+        items.map((it, i) => `${i + 1}. ${it}`).join('\n');
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'object',
+            properties: {
+              matches: {
+                type: 'array',
+                items: { type: 'object', properties: { item: { type: 'string' }, code: { type: 'string' } }, required: ['item', 'code'] },
+              },
+            },
+            required: ['matches'],
+          } as any,
+        },
+      });
+      const parsed = JSON.parse(response.text || '{}');
+      const valid = new Set(options.map((o) => o.code));
+      const matches: Record<string, string> = {};
+      for (const m of Array.isArray(parsed.matches) ? parsed.matches : []) {
+        const item = typeof m?.item === 'string' ? m.item.trim() : '';
+        const code = typeof m?.code === 'string' ? m.code.replace(/^#/, '').trim() : '';
+        if (item && code && valid.has(code) && items.some((it) => it.toLowerCase() === item.toLowerCase())) {
+          matches[item.toLowerCase().replace(/\s+/g, ' ')] = code;
+        }
+      }
+      return res.json({ success: true, matches, ai: true });
+    } catch (err: any) {
+      console.warn('[Bulk Upload] AI material matching failed:', err?.message || err);
+      return res.json({ success: true, matches: {}, ai: false });
+    }
+  });
+
+  // Reads an uploaded .xlsx / .csv into header + rows (validation happens in the app against live data)
+  app.post('/api/bulk/parse', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const kind = b.type === 'vendors' ? 'vendors' : 'materials';
+      const fileName = typeof b.fileName === 'string' ? b.fileName.slice(0, 200) : '';
+      const data = typeof b.data === 'string' ? b.data : '';
+      if (!fileName || !data) throw new HttpError(400, 'Choose an .xlsx or .csv file to upload.');
+      const buf = Buffer.from(data.replace(/^data:[^,]*,/, ''), 'base64');
+      if (!buf.length) throw new HttpError(400, 'The file is empty.');
+      if (buf.length > BULK_MAX_FILE_BYTES) throw new HttpError(413, 'The file is larger than 3 MB. Split it into smaller files.');
+
+      const cellText = (v: any): string => {
+        if (v === null || v === undefined) return '';
+        if (v instanceof Date) return v.toISOString().slice(0, 10);
+        if (typeof v === 'object') {
+          if (v.richText) return v.richText.map((r: any) => r.text).join('');
+          if ('result' in v) return cellText(v.result);
+          if ('text' in v) return String(v.text);
+          if (v.error) return '';
+          return '';
+        }
+        return String(v);
+      };
+
+      let grid: string[][] = [];
+      let sheetName = '';
+      const isZip = buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b;
+      if (isZip) {
+        const ExcelJS = (await import('exceljs')).default;
+        const wb = new ExcelJS.Workbook();
+        try {
+          await wb.xlsx.load(buf as any);
+        } catch {
+          throw new HttpError(400, 'Could not read this Excel file. Save it as .xlsx (Excel Workbook) and try again.');
+        }
+        const wanted = kind === 'materials' ? 'materials' : 'vendors';
+        const skip = new Set(['instructions', 'material codes', 'material list', 'sites', 'example']);
+        const sheet =
+          wb.worksheets.find((s) => s.name.trim().toLowerCase() === wanted) ||
+          wb.worksheets.find((s) => !skip.has(s.name.trim().toLowerCase()) && s.actualRowCount > 0) ||
+          wb.worksheets[0];
+        if (!sheet) throw new HttpError(400, 'The workbook has no sheets.');
+        sheetName = sheet.name;
+        sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+          if (grid.length > BULK_MAX_ROWS + 20) return;
+          const vals = (row.values as any[]).slice(1).map(cellText);
+          grid[rowNumber - 1] = vals;
+        });
+      } else if (/\.(csv|txt)$/i.test(fileName)) {
+        const text = buf.toString('utf8').replace(/^﻿/, '');
+        const firstLine = text.split(/\r?\n/, 1)[0] || '';
+        const delim = [',', ';', '\t'].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+        // RFC 4180 style parser (quoted fields, escaped quotes, newlines inside quotes)
+        let row: string[] = [];
+        let field = '';
+        let quoted = false;
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          if (quoted) {
+            if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+            else if (ch === '"') quoted = false;
+            else field += ch;
+          } else if (ch === '"') quoted = true;
+          else if (ch === delim) { row.push(field); field = ''; }
+          else if (ch === '\n' || ch === '\r') {
+            if (ch === '\r' && text[i + 1] === '\n') i++;
+            row.push(field); field = '';
+            grid.push(row); row = [];
+            if (grid.length > BULK_MAX_ROWS + 20) break;
+          } else field += ch;
+        }
+        if (field || row.length) { row.push(field); grid.push(row); }
+        sheetName = 'CSV';
+      } else {
+        throw new HttpError(400, 'Unsupported file. Upload an Excel (.xlsx) or CSV (.csv) file. Old .xls files must be saved as .xlsx first.');
+      }
+
+      // Header = first row (within the first 10) that has at least 2 filled cells
+      let headerIdx = -1;
+      for (let i = 0; i < Math.min(grid.length, 10); i++) {
+        if ((grid[i] || []).filter((c) => String(c).trim()).length >= 2) { headerIdx = i; break; }
+      }
+      if (headerIdx < 0) throw new HttpError(400, 'No header row found. Use the template: the first row must contain the column names.');
+      const headers = (grid[headerIdx] || []).map((h) => String(h).trim());
+      const rows: { rowNumber: number; values: Record<string, string> }[] = [];
+      for (let i = headerIdx + 1; i < grid.length; i++) {
+        const r = grid[i];
+        if (!r || r.every((c) => !String(c ?? '').trim())) continue;
+        const values: Record<string, string> = {};
+        headers.forEach((h, j) => { if (h) values[h] = String(r[j] ?? '').trim(); });
+        rows.push({ rowNumber: i + 1, values });
+      }
+      return res.json({ success: true, sheetName, headers: headers.filter(Boolean), rows });
+    } catch (err) {
+      return sendError(res, err, 'Could not read the file.');
     }
   });
 

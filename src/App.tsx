@@ -20,6 +20,7 @@ import {
 import StatsGrid from './components/StatsGrid';
 import ProjectSelector from './components/ProjectSelector';
 import MaterialList from './components/MaterialList';
+import type { MaterialImportPlan, VendorImportPlan } from './lib/bulkImport';
 import TransactionHistory from './components/TransactionHistory';
 import StockAnalytics from './components/StockAnalytics';
 import QueryCenter from './components/QueryCenter';
@@ -583,6 +584,11 @@ export default function App() {
     setContractors((prev) => [newContractor, ...prev]);
   };
 
+  // Removes a contracting firm (e.g. the sample records when starting fresh). Saved by the normal sync.
+  const handleDeleteContractor = (contractorId: string) => {
+    setContractors((prev) => prev.filter((c) => c.id !== contractorId));
+  };
+
   const handleUpdateContractorBilling = (
     contractorId: string,
     updates: {
@@ -971,6 +977,27 @@ export default function App() {
   };
 
   // Action: Add a Material
+  // Bulk upload (admin): apply a validated import plan. State changes are saved to MongoDB by the normal sync.
+  const handleApplyMaterialImport = (plan: MaterialImportPlan) => {
+    const removeMat = new Set(plan.removeMaterialIds);
+    const removeTx = new Set(plan.removeTransactionIds);
+    const updates = new Map(plan.update.map((m) => [m.id, m]));
+    setMaterials((prev) => [
+      ...plan.add,
+      ...prev.filter((m) => !removeMat.has(m.id)).map((m) => updates.get(m.id) || m),
+    ]);
+    if (removeTx.size) setTransactions((prev) => prev.filter((t) => !removeTx.has(t.id)));
+  };
+
+  const handleApplyVendorImport = (plan: VendorImportPlan) => {
+    const removeIds = new Set(plan.removeVendorIds);
+    const updates = new Map(plan.update.map((v) => [v.id, v]));
+    setVendors((prev) => [
+      ...plan.add,
+      ...prev.filter((v) => !removeIds.has(v.id)).map((v) => updates.get(v.id) || v),
+    ]);
+  };
+
   const handleAddMaterial = (newMat: Omit<Material, 'id' | 'currentStock'> & {
     initialStock: number;
     totalPrice?: number;
@@ -1275,9 +1302,21 @@ export default function App() {
         if (mat.id === txToRevert.materialId) {
           const delta = txToRevert.type === 'addition' ? -txToRevert.quantity : txToRevert.quantity;
           const updatedStock = Math.max(0, mat.currentStock + delta);
+          // A deleted purchase also disappears from the material's rate history (rate graph)
+          let rateHistory = mat.rateHistory;
+          if (txToRevert.type === 'addition' && rateHistory?.length) {
+            const idx = rateHistory.findIndex(
+              (p) =>
+                p.date === txToRevert.date &&
+                Number(p.quantity) === Number(txToRevert.quantity) &&
+                (p.billNumber || '') === (txToRevert.billNumber || '')
+            );
+            if (idx >= 0) rateHistory = rateHistory.filter((_, i) => i !== idx);
+          }
           const updatedMat = {
             ...mat,
             currentStock: Number(updatedStock.toFixed(3)),
+            rateHistory,
           };
           return updatedMat;
         }
@@ -1496,7 +1535,7 @@ export default function App() {
             }`}
           >
             <BookOpen size={14} />
-            Procurement and Contracts ({
+            Procurements ({
               selectedProjectId === 'all'
                 ? userVisibleMaterials.length
                 : userVisibleMaterials.filter(m => m.projectId === selectedProjectId).length
@@ -1672,6 +1711,20 @@ export default function App() {
                   lowStockOnlyFilter={stockFilterMode === 'low'}
                   onClearLowStockFilter={() => setStockFilterMode('all')}
                   onToggleLowStockFilter={(enable) => setStockFilterMode(enable ? 'low' : 'all')}
+                  bulkUpload={
+                    currentUser.role === 'admin'
+                      ? {
+                          projects,
+                          materials,
+                          transactions,
+                          vendors,
+                          prs,
+                          quotes,
+                          onApplyMaterials: handleApplyMaterialImport,
+                          onApplyVendors: handleApplyVendorImport,
+                        }
+                      : undefined
+                  }
                 />
               </motion.div>
             )}
@@ -1725,6 +1778,7 @@ export default function App() {
                   onAddContractor={handleAddContractor}
                   onUpdateContractorBilling={handleUpdateContractorBilling}
                   onOpenRaiseQueryModalForContractor={handleOpenRaiseQueryForContractor}
+                  onDeleteContractor={handleDeleteContractor}
                 />
               </motion.div>
             )}
@@ -1745,6 +1799,7 @@ export default function App() {
                   currentUser={currentUser}
                   onAddTransfer={handleAddTransfer}
                   onUpdateTransferStatus={handleUpdateTransferStatus}
+                  onDeleteTransfer={(id) => setTransfers((prev) => prev.filter((t) => t.id !== id))}
                 />
               </motion.div>
             )}
@@ -1765,6 +1820,10 @@ export default function App() {
                   currentUser={currentUser}
                   onUpdateMaterialBillType={handleUpdateMaterialBillType}
                   onAddBillTransaction={handleAddBillTransaction}
+                  onDeleteBill={(bill) => {
+                    if (bill.sourceType === 'transaction') handleRemoveTransaction(bill.sourceId);
+                    else setMaterials((prev) => prev.map((m) => (m.id === bill.sourceId ? { ...m, baseBillRemoved: true } : m)));
+                  }}
                 />
               </motion.div>
             )}
