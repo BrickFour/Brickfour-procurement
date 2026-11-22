@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, BellRing, CheckCheck, FileText, Truck, AlertTriangle, CalendarClock, Banknote, Send, X, ShoppingCart, MessageSquare, MessageSquareReply, CheckCircle2 } from 'lucide-react';
+import { Bell, BellRing, CheckCheck, FileText, Truck, AlertTriangle, CalendarClock, Banknote, Send, X, ShoppingCart, MessageSquare, MessageSquareReply, CheckCircle2, ShieldCheck, ShieldX, Handshake, PackageX } from 'lucide-react';
 import { AppNotification, User } from '../types';
 
 type Link = NonNullable<AppNotification['link']>;
@@ -15,7 +15,7 @@ interface NotificationCenterProps {
 }
 
 const POLL_MS = 20000;
-const URGENT: AppNotification['type'][] = ['payment-due', 'payment-overdue', 'po-email-failed'];
+const URGENT: AppNotification['type'][] = ['payment-due', 'payment-overdue', 'po-email-failed', 'approval-requested', 'delivery-overdue', 'material-rejected'];
 
 const ICONS: Record<AppNotification['type'], React.ComponentType<{ size?: number; className?: string }>> = {
   'quote-received': FileText,
@@ -30,6 +30,14 @@ const ICONS: Record<AppNotification['type'], React.ComponentType<{ size?: number
   'query-raised': MessageSquare,
   'query-reply': MessageSquareReply,
   'query-status': CheckCircle2,
+  'approval-requested': ShieldCheck,
+  'approval-approved': ShieldCheck,
+  'approval-rejected': ShieldX,
+  'negotiation-offer': Handshake,
+  'negotiation-response': Handshake,
+  'delivery-due': CalendarClock,
+  'delivery-overdue': AlertTriangle,
+  'material-rejected': PackageX,
 };
 const TONE: Record<AppNotification['severity'], string> = {
   info: 'bg-[#eaf0fb] text-[#23408e]',

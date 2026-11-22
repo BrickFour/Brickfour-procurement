@@ -4,6 +4,7 @@ import { resolveMaterialCode, resolveMaterialGroup } from '../lib/materialCodes'
 import { getVendorsForMaterialCode, getMarketBenchmark, EVALUATION_CRITERIA_TEXT } from '../lib/vendorComparison';
 import { sendEmailNotification } from '../services/emailService';
 import { safeText } from '../lib/userError';
+import { useVendorPerformance, displayRating } from '../lib/vendorPerformance';
 import { withVendorQuoteTokens, buildVendorQuoteUrl } from '../lib/vendorQuoteLinks';
 import {
   X,
@@ -53,6 +54,7 @@ export default function OrderQueryModal({
   marketBenchmarks,
   onCreatePR,
 }: OrderQueryModalProps) {
+  const { byVendor: vendorPerf } = useVendorPerformance();
   // Selected project
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     material?.projectId || projects[0]?.id || ''
@@ -1008,9 +1010,17 @@ Contact Email: ganeshnagargoje1008@gmail.com
                           <h4 className="text-sm font-semibold text-slate-900 truncate" title={vendor.name}>
                             {vendor.name}
                           </h4>
-                          <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-amber-800 shrink-0">
-                            ★ {vendor.rating.toFixed(1)}
-                          </span>
+                          {(() => {
+                            const r = displayRating(vendorPerf.get(vendor.id), vendor.rating);
+                            return (
+                              <span
+                                className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-amber-800 shrink-0"
+                                title={r.measured ? 'Automatic rating from delivery, quality, price, responsiveness and invoice history' : 'Manual rating (no purchase history yet)'}
+                              >
+                                ★ {r.value.toFixed(1)}{r.measured ? '' : ' (manual)'}
+                              </span>
+                            );
+                          })()}
                         </div>
 
                         <p className="text-[11px] text-slate-500 truncate mt-0.5">

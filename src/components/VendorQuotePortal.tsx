@@ -66,6 +66,13 @@ interface ExistingQuote {
   attachment?: Attachment;
   declineReason?: string;
   submittedAt: string;
+  negotiation?: {
+    status: 'Offered' | 'Countered' | 'Accepted' | 'Rejected';
+    originalRate: number;
+    targetRate: number;
+    agreedRate?: number;
+    rounds: { by: 'buyer' | 'vendor'; action: string; rate: number; note?: string; at: string }[];
+  };
 }
 
 type LoadState =
@@ -79,6 +86,7 @@ type LoadState =
       isClosed: boolean;
       closedReason: string | null;
       gstRateOptions: number[];
+      canRespondToOffer: boolean;
     };
 
 /** Key figures (kept as strings while editing) */
@@ -211,6 +219,12 @@ export default function VendorQuotePortal() {
   const [result, setResult] = useState<{ kind: 'submitted' | 'declined'; at: string } | null>(null);
   const [declineOpen, setDeclineOpen] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [counterRate, setCounterRate] = useState('');
+  const [offerNote, setOfferNote] = useState('');
+  const [offerBusy, setOfferBusy] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [offerDone, setOfferDone] = useState<string | null>(null);
 
   // Load the RFQ
   useEffect(() => {
@@ -235,6 +249,7 @@ export default function VendorQuotePortal() {
           isClosed: json.isClosed,
           closedReason: json.closedReason,
           gstRateOptions: json.gstRateOptions || [0, 5, 12, 18, 28],
+          canRespondToOffer: Boolean(json.canRespondToOffer),
         });
         if (existing && existing.status !== 'Declined') {
           setFigures({
@@ -271,7 +286,40 @@ export default function VendorQuotePortal() {
     return () => {
       cancelled = true;
     };
-  }, [prId, vendorId, token]);
+  }, [prId, vendorId, token, reloadKey]);
+
+  /* ---------------- Counter-offer from the buyer ---------------- */
+  const respondToOffer = async (action: 'accept' | 'counter' | 'reject') => {
+    if (action === 'counter' && !(Number(counterRate) > 0)) {
+      setOfferError('Please enter your counter-rate.');
+      return;
+    }
+    setOfferBusy(true);
+    setOfferError(null);
+    try {
+      const res = await fetch('/api/vendor-quote/negotiation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pr: prId, v: vendorId, t: token, action, rate: action === 'counter' ? Number(counterRate) : undefined, note: offerNote }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) throw apiError(json, 'Could not send your reply. Please try again.');
+      setOfferDone(
+        action === 'accept'
+          ? `Thank you. You accepted ${inr(json.rate)} per unit; your quotation total is now ${inr(json.totalAmount)}.`
+          : action === 'counter'
+            ? `Thank you. Your counter-rate of ${inr(json.rate)} per unit has been sent to the procurement team.`
+            : 'Thank you. Your quoted rate stays unchanged.'
+      );
+      setCounterRate('');
+      setOfferNote('');
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setOfferError(userMessage(err, 'Could not send your reply. Please check your internet connection and try again.'));
+    } finally {
+      setOfferBusy(false);
+    }
+  };
 
   // Countdown tick
   useEffect(() => {
@@ -516,7 +564,8 @@ export default function VendorQuotePortal() {
     );
   }
 
-  const { pr, vendor, existingQuote, isClosed, closedReason, gstRateOptions } = state;
+  const { pr, vendor, existingQuote, isClosed, closedReason, gstRateOptions, canRespondToOffer } = state;
+  const offer = existingQuote?.negotiation;
   const deadlineClosed = pr.quoteDeadline ? Date.parse(pr.quoteDeadline) <= now : false;
   const closed = isClosed || deadlineClosed;
   const activeMethod = METHODS.find((m) => m.id === method)!;
@@ -593,6 +642,93 @@ export default function VendorQuotePortal() {
           </div>
         </div>
       </section>
+
+      {/* Counter-offer from the buyer */}
+      {offerDone && (
+        <section role="status" className="bg-emerald-50 border border-emerald-200 rounded-xl px-6 py-4 text-[15px] text-emerald-900 flex items-start gap-2">
+          <CheckCircle2 size={18} className="mt-0.5 shrink-0" /> {offerDone}
+        </section>
+      )}
+      {offer && offer.status === 'Offered' && canRespondToOffer && existingQuote && (
+        <section className="bg-white rounded-xl border-2 border-[#13294b] shadow-sm" aria-labelledby="offer-title">
+          <h2 id="offer-title" className="px-6 py-4 border-b border-slate-200 text-base font-semibold text-slate-900">Revised price requested</h2>
+          <div className="px-6 py-5 space-y-4">
+            <p className="text-[15px] text-slate-700">We would like to place this order with you at a revised rate. Please choose one of the options below.</p>
+            <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                <dt className="text-sm text-slate-500">Your current rate</dt>
+                <dd className="text-lg font-bold text-slate-900">{inr(existingQuote.quotedRate)} <span className="text-sm font-normal text-slate-500">/ {pr.unit}</span></dd>
+              </div>
+              <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                <dt className="text-sm text-[#1d4f91]">Our offer</dt>
+                <dd className="text-lg font-bold text-[#13294b]">{inr(offer.targetRate)} <span className="text-sm font-normal text-slate-500">/ {pr.unit}</span></dd>
+              </div>
+              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                <dt className="text-sm text-slate-500">Quantity</dt>
+                <dd className="text-lg font-bold text-slate-900">{existingQuote.quantity} {pr.unit}</dd>
+              </div>
+            </dl>
+            {(() => {
+              const last = [...offer.rounds].reverse().find((r) => r.by === 'buyer');
+              return last?.note ? <p className="text-[15px] text-slate-700 border-l-4 border-blue-200 pl-3">"{last.note}"</p> : null;
+            })()}
+            <p className="text-sm text-slate-500">Rates exclude GST. GST, freight and loading stay as in your quotation.</p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="block text-sm font-semibold text-slate-800">
+                Your counter-rate (optional, Rs. per {pr.unit})
+                <input
+                  id="offer-counter-rate"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={counterRate}
+                  onChange={(e) => setCounterRate(e.target.value)}
+                  placeholder={`Between ${offer.targetRate} and ${existingQuote.quotedRate}`}
+                  className="mt-1.5 w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-sm focus:outline-hidden focus:ring-2 focus:ring-[#13294b]/30"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-800">
+                Message (optional)
+                <input
+                  id="offer-note"
+                  value={offerNote}
+                  onChange={(e) => setOfferNote(e.target.value)}
+                  maxLength={500}
+                  className="mt-1.5 w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-sm focus:outline-hidden focus:ring-2 focus:ring-[#13294b]/30"
+                />
+              </label>
+            </div>
+            {offerError && <p role="alert" className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{offerError}</p>}
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                disabled={offerBusy}
+                onClick={() => respondToOffer('accept')}
+                className="px-5 py-2.5 rounded-lg bg-[#13294b] hover:bg-[#0d1d36] text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-60 cursor-pointer"
+              >
+                {offerBusy && <Loader2 size={15} className="animate-spin" />} Accept {inr(offer.targetRate)}
+              </button>
+              <button
+                type="button"
+                disabled={offerBusy || !counterRate}
+                onClick={() => respondToOffer('counter')}
+                className="px-5 py-2.5 rounded-lg border border-[#13294b] text-[#13294b] hover:bg-blue-50 text-sm font-semibold disabled:opacity-50 cursor-pointer"
+              >
+                Send counter-rate
+              </button>
+              <button
+                type="button"
+                disabled={offerBusy}
+                onClick={() => respondToOffer('reject')}
+                className="px-5 py-2.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-sm font-medium disabled:opacity-60 cursor-pointer"
+              >
+                Keep my quoted rate
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Result / closed / form */}
       {result ? (

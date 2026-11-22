@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { apiError, safeText, userMessage } from '../lib/userError';
+import { apiError, safeText, userMessage, UserFacingError } from '../lib/userError';
 import {
   ProjectRequirement,
   Vendor,
@@ -12,7 +12,12 @@ import {
   PurchaseOrderReceipt,
   InvoiceLineItem,
   ExtractedInvoice,
+  MaterialVerification,
+  VendorPerformance,
+  NegotiationRound,
 } from '../types';
+import MaterialVerificationPanel, { newVerificationDraft, verificationError, verificationQuantities, VerificationDraft } from './MaterialVerificationPanel';
+import { useVendorPerformance, displayRating } from '../lib/vendorPerformance';
 import {
   getMarketBenchmark,
   calculateMarketDelta,
@@ -46,6 +51,7 @@ import {
   CalendarClock,
   BellRing,
   Banknote,
+  Handshake,
 } from 'lucide-react';
 
 /* Brand colours (app theme) */
@@ -60,7 +66,12 @@ const SUBMISSION_METHOD_LABEL: Record<string, string> = {
 };
 
 export interface DeliveryInput {
-  receivedQty: number;
+  receivedQty: number; // delivered by the vendor
+  acceptedQty: number; // accepted after inspection (added to stock and invoiced)
+  quality: MaterialVerification['quality'];
+  checks: MaterialVerification['checks'];
+  rejectionReason?: string;
+  inspectedBy: string;
   receivedOn: string;
   invoiceNumber: string;
   invoiceDate: string;
@@ -90,7 +101,12 @@ interface OrderQueryComparisonCenterProps {
   currentUser: User;
   onOpenNewPR: () => void;
   onOpenSubmitQuote: (pr: ProjectRequirement) => void;
-  onAwardPR: (prId: string, vendorId: string) => Promise<boolean> | void;
+  /** A requirement changed on the server (sent for approval, approved, rejected) */
+  onPrUpdated: (pr: ProjectRequirement) => void;
+  /** Quotations changed on the server (counter-offer sent): re-read them */
+  onQuotesChanged: () => void;
+  /** A PO was issued on approval (refresh notifications etc.) */
+  onPoIssued?: () => void;
   onRecordDelivery: (
     po: PurchaseOrderRecord,
     input: DeliveryInput
@@ -99,11 +115,12 @@ interface OrderQueryComparisonCenterProps {
   /** Manually retry the automatic PO for an awarded PR */
   onRetryPurchaseOrder: (prId: string, vendorId: string) => Promise<boolean>;
   /** Open a specific RFQ / purchase order (e.g. from a notification) */
-  focusRequest?: { view: 'rfqs' | 'pos'; prId?: string; poNumber?: string; nonce: number } | null;
+  focusRequest?: { view: 'rfqs' | 'pos' | 'approvals'; prId?: string; poNumber?: string; nonce: number } | null;
 }
 
 /** Payment state of a recorded invoice */
 function paymentInfo(r: PurchaseOrderReceipt): { label: string; className: string; urgent: boolean } {
+  if (r.paymentStatus === 'Not applicable') return { label: 'Rejected - no invoice', className: 'bg-slate-100 text-slate-600 border-slate-200', urgent: false };
   if (r.paymentStatus === 'Paid') return { label: `Paid${r.paidOn ? ` ${fmtDate(r.paidOn)}` : ''}`, className: 'bg-emerald-50 text-emerald-800 border-emerald-200', urgent: false };
   if (!r.dueDate) return { label: 'Unpaid', className: 'bg-slate-100 text-slate-700 border-slate-200', urgent: false };
   const days = Math.round((Date.parse(`${r.dueDate}T12:00:00Z`) - Date.parse(`${todayIso()}T12:00:00Z`)) / 86400000);
@@ -179,16 +196,25 @@ function Kpi({ label, value, hint }: { label: string; value: React.ReactNode; hi
 function DeliveryDialog({
   po,
   projectName,
+  inspectorName,
   onClose,
   onSubmit,
 }: {
   po: PurchaseOrderRecord;
   projectName: string;
+  inspectorName: string;
   onClose: () => void;
   onSubmit: (input: DeliveryInput) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const remaining = round2(po.orderedQty - po.receivedQty);
-  const [qty, setQty] = useState(String(remaining));
+  const [deliveredQty, setDeliveredQty] = useState(String(remaining));
+  const [verification, setVerification] = useState<VerificationDraft>(() => newVerificationDraft(inspectorName));
+  const delivered = Number(deliveredQty) || 0;
+  const { accepted } = verificationQuantities(verification, delivered);
+  // Invoice and stock are for the accepted quantity only
+  const qty = String(Number.isFinite(accepted) ? accepted : 0);
+  const setQty = (v: string) => setVerification((d) => ({ ...d, acceptedQty: v }));
+  const needsInvoice = Number(qty) > 0;
   const [receivedOn, setReceivedOn] = useState(todayIso());
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(todayIso());
@@ -251,7 +277,7 @@ function DeliveryDialog({
       if (items.length) filled.push(`${items.length} line item${items.length === 1 ? '' : 's'}`);
       const materialQty = inv.materialQuantity || (items.length === 1 ? items[0].quantity : undefined);
       if (materialQty) {
-        setQty(String(materialQty));
+        setDeliveredQty(String(materialQty));
         filled.push('quantity');
         if (materialQty > remaining + 1e-6) warnings.push(`Invoice quantity (${materialQty} ${po.unit}) is more than the ${remaining} ${po.unit} pending on this PO.`);
       }
@@ -276,27 +302,34 @@ function DeliveryDialog({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!(q > 0) || q > remaining + 1e-6) return setError(`Quantity received must be between 0 and ${remaining} ${po.unit}.`);
-    if (!invoiceNumber.trim()) return setError('Please enter the vendor invoice number.');
-    if (!(Number(invoiceTotal) > 0)) return setError('Please enter the invoice amount.');
+    const vError = verificationError(verification, delivered);
+    if (vError) return setError(vError);
+    if (q > remaining + 1e-6) return setError(`Only ${remaining} ${po.unit} is pending on this PO. Accepted quantity cannot be more.`);
+    if (needsInvoice && !invoiceNumber.trim()) return setError('Please enter the vendor invoice number.');
+    if (needsInvoice && !(Number(invoiceTotal) > 0)) return setError('Please enter the invoice amount.');
     setBusy(true);
     setError(null);
     let filePayload: DeliveryInput['file'];
     try {
-      if (file) filePayload = { fileName: file.name, data: fileData || (await readAsBase64(file)) };
+      if (file && needsInvoice) filePayload = { fileName: file.name, data: fileData || (await readAsBase64(file)) };
     } catch {
       setBusy(false);
       return setError('Could not read the invoice file.');
     }
     const result = await onSubmit({
-      receivedQty: q,
+      receivedQty: delivered,
+      acceptedQty: q,
+      quality: verification.quality,
+      checks: verification.checks,
+      ...(delivered - q > 0 ? { rejectionReason: verification.rejectionReason.trim() } : {}),
+      inspectedBy: verification.inspectedBy.trim(),
       receivedOn,
-      invoiceNumber: invoiceNumber.trim(),
+      invoiceNumber: needsInvoice ? invoiceNumber.trim() : '',
       invoiceDate,
-      invoiceTotal: Number(invoiceTotal),
-      notes: notes.trim(),
+      invoiceTotal: needsInvoice ? Number(invoiceTotal) : 0,
+      notes: [notes.trim(), verification.remarks.trim() && `Inspection: ${verification.remarks.trim()}`].filter(Boolean).join(' | '),
       file: filePayload,
-      ...(lineItems.length ? { lineItems } : {}),
+      ...(lineItems.length && needsInvoice ? { lineItems } : {}),
     });
     setBusy(false);
     if (!result.ok) setError(safeText(result.error, 'Could not record the delivery. Please try again.'));
@@ -308,7 +341,7 @@ function DeliveryDialog({
       <form onSubmit={submit} noValidate role="dialog" aria-label="Record delivery and invoice" className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto">
         <div className="flex items-start justify-between px-6 py-4 border-b border-slate-200">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">Record Delivery &amp; Invoice</h3>
+            <h3 className="text-base font-semibold text-slate-900">Record Delivery, Inspection &amp; Invoice</h3>
             <p className="text-xs text-slate-500 mt-0.5">
               {po.poNumber} • {po.materialName} • {po.vendorName} • Pending: <strong>{remaining} {po.unit}</strong>
             </p>
@@ -390,13 +423,29 @@ function DeliveryDialog({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block text-sm font-medium text-slate-700">
-              Quantity received ({po.unit}) *
-              <input id="dl-qty" type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} className={`${field} mt-1`} />
+              Quantity delivered ({po.unit}) *
+              <input id="dl-qty" type="number" min="0" step="any" value={deliveredQty} onChange={(e) => setDeliveredQty(e.target.value)} className={`${field} mt-1`} />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Received on *
               <input id="dl-received" type="date" value={receivedOn} onChange={(e) => setReceivedOn(e.target.value)} className={`${field} mt-1`} />
+              {po.deliveryByIso && receivedOn > po.deliveryByIso && (
+                <span className="mt-1 flex items-center gap-1 text-xs text-amber-700">
+                  <AlertTriangle size={12} /> Late by {Math.round((Date.parse(`${receivedOn}T12:00:00Z`) - Date.parse(`${po.deliveryByIso}T12:00:00Z`)) / 86400000)} day(s) - counts in the vendor's rating
+                </span>
+              )}
             </label>
+          </div>
+
+          <MaterialVerificationPanel idPrefix="dl-verify" unit={po.unit} delivered={delivered} value={verification} onChange={setVerification} />
+
+          {!needsInvoice ? (
+            <p className="text-sm text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+              The whole delivery is rejected: nothing is added to stock and no invoice or payment is recorded. The vendor is emailed to replace the material, and the quantity stays pending on {po.poNumber}.
+            </p>
+          ) : (
+          <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block text-sm font-medium text-slate-700">
               Vendor invoice number *
               <input id="dl-invoice" value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} maxLength={60} className={`${field} mt-1`} />
@@ -447,13 +496,16 @@ function DeliveryDialog({
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Notes
-              <input id="dl-notes" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="e.g. Vehicle MH12 AB 1234, 2 bags damaged" className={`${field} mt-1`} />
+              <input id="dl-notes" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="e.g. Vehicle MH12 AB 1234" className={`${field} mt-1`} />
             </label>
           </div>
           <p className="text-xs text-slate-500">
-            On saving: <strong>{q || 0} {po.unit}</strong> is added to the {projectName} stock, the project estimation cost is updated, the bill is filed
+            On saving: a GRN number is assigned, <strong>{q || 0} {po.unit}</strong> (accepted) is added to the {projectName} stock, the project estimation cost is updated, the bill is filed
             under <strong>GST &amp; URD Bills</strong>, and the payment reminder is scheduled.
+            {delivered - q > 0 && <> The rejected {round2(delivered - q)} {po.unit} stays pending and the vendor is emailed to replace it.</>}
           </p>
+          </>
+          )}
           {error && <p role="alert" className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
         </div>
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
@@ -479,14 +531,22 @@ export default function OrderQueryComparisonCenter({
   currentUser,
   onOpenNewPR,
   onOpenSubmitQuote,
-  onAwardPR,
+  onPrUpdated,
+  onQuotesChanged,
+  onPoIssued,
   onRecordDelivery,
   poRefreshKey = 0,
   onRetryPurchaseOrder,
   focusRequest,
   projects,
+  materials,
 }: OrderQueryComparisonCenterProps) {
-  const [view, setView] = useState<'rfqs' | 'pos'>('rfqs');
+  const isApprover = currentUser.role === 'approver';
+  const [view, setView] = useState<'rfqs' | 'approvals' | 'pos'>(isApprover ? 'approvals' : 'rfqs');
+  const { byVendor: vendorPerf, refresh: refreshVendorPerf } = useVendorPerformance();
+  const [approvalDialog, setApprovalDialog] = useState<{ pr: ProjectRequirement; quote: VendorQuotation } | null>(null);
+  const [negotiateDialog, setNegotiateDialog] = useState<{ pr: ProjectRequirement; quote: VendorQuotation; peers: VendorQuotation[] } | null>(null);
+  const [decision, setDecision] = useState<{ pr: ProjectRequirement; kind: 'approve' | 'reject' } | null>(null);
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRecord[]>([]);
@@ -518,7 +578,9 @@ export default function OrderQueryComparisonCenter({
     setView(focusRequest.view);
     if (focusRequest.view === 'rfqs') {
       const pr = focusRequest.prId ? prs.find((p) => p.id === focusRequest.prId) : undefined;
-      setSelectedPrId(pr && pr.status !== 'Awarded' && pr.status !== 'Closed' ? pr.id : null);
+      setSelectedPrId(pr && !['Awarded', 'Closed', 'Pending Approval'].includes(pr.status) ? pr.id : null);
+    } else if (focusRequest.view === 'approvals') {
+      setSelectedPrId(null);
     } else {
       setSelectedPrId(null);
       if (focusRequest.poNumber) setExpandedPo(focusRequest.poNumber);
@@ -552,8 +614,72 @@ export default function OrderQueryComparisonCenter({
     }
   };
 
-  // Open RFQs = not yet awarded/closed. Awarded RFQs move to Purchase Orders.
-  const openPrs = useMemo(() => prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed'), [prs]);
+  /** POST to the API; returns the JSON or throws a user-facing error */
+  const postJson = async (url: string, body: any, fallback: string) => {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.success) throw apiError(json, fallback);
+    return json;
+  };
+
+  const requestApproval = async (pr: ProjectRequirement, quote: VendorQuotation, note: string) => {
+    const json = await postJson(
+      '/api/approvals/request',
+      { prId: pr.id, vendorId: quote.vendorId, requestedBy: currentUser.name, note, pr },
+      'Could not send this order for approval. Please try again.'
+    );
+    onPrUpdated(json.pr);
+    setSelectedPrId(null);
+    setView('approvals');
+    setNotice(`${pr.id} sent for approval: ${quote.vendorName} at ${rs(quote.totalAmount)}. The PO is issued as soon as it is approved.`);
+  };
+
+  const decideApproval = async (pr: ProjectRequirement, kind: 'approve' | 'reject', comment: string) => {
+    const json = await postJson(
+      '/api/approvals/decide',
+      { prId: pr.id, decision: kind, comment, decidedBy: currentUser.name },
+      'Could not record your decision. Please try again.'
+    );
+    onPrUpdated(json.pr);
+    if (kind === 'approve') {
+      setNotice(
+        json.purchaseOrder
+          ? `Approved. Purchase order ${json.purchaseOrder.poNumber} was generated${json.purchaseOrder.emailStatus === 'sent' ? ` and emailed to ${json.purchaseOrder.emailedTo}` : ''}.`
+          : `Approved. ${safeText(json.poError, 'The purchase order could not be generated - use "Retry PO" under Purchase Orders.')}`
+      );
+      loadPurchaseOrders();
+      onPoIssued?.();
+      refreshVendorPerf();
+    } else {
+      setNotice(`${pr.id} was not approved. It is back with the purchase team for comparison.`);
+    }
+  };
+
+  const sendOffer = async (pr: ProjectRequirement, quote: VendorQuotation, targetRate: number, note: string) => {
+    const json = await postJson(
+      '/api/negotiations/offer',
+      { prId: pr.id, vendorId: quote.vendorId, targetRate, note, byName: currentUser.name },
+      'Could not send the counter-offer. Please try again.'
+    );
+    onQuotesChanged();
+    setNotice(
+      json.emailed
+        ? `Counter-offer of ${rs(targetRate)} / ${quote.unit} emailed to ${quote.vendorName}. You will be notified when they reply.`
+        : `Counter-offer of ${rs(targetRate)} / ${quote.unit} recorded, but ${quote.vendorName} could not be emailed. Please share it with them.`
+    );
+  };
+
+  // Open RFQs = not yet sent for approval / awarded / closed. Awarded RFQs move to Purchase Orders.
+  const openPrs = useMemo(() => prs.filter((p) => !['Awarded', 'Closed', 'Pending Approval'].includes(p.status)), [prs]);
+  const approvalPrs = useMemo(() => prs.filter((p) => p.status === 'Pending Approval'), [prs]);
+  const decidedApprovals = useMemo(
+    () =>
+      prs
+        .filter((p) => p.approval && p.approval.status !== 'Pending')
+        .sort((a, b) => String(b.approval?.decidedAt).localeCompare(String(a.approval?.decidedAt)))
+        .slice(0, 15),
+    [prs]
+  );
   const awardedWithoutPo = useMemo(() => prs.filter((p) => p.status === 'Awarded' && !p.purchaseOrder && p.selectedVendorId), [prs]);
   const quotesByPr = useMemo(() => {
     const map = new Map<string, VendorQuotation[]>();
@@ -574,24 +700,15 @@ export default function OrderQueryComparisonCenter({
   }, [openPrs, quotesByPr, search]);
 
   const selectedPr = selectedPrId ? prs.find((p) => p.id === selectedPrId) || null : null;
-  // If the selected RFQ gets awarded, leave the detail view
+  // If the selected RFQ gets sent for approval or awarded, leave the detail view
   useEffect(() => {
-    if (selectedPr && (selectedPr.status === 'Awarded' || selectedPr.status === 'Closed')) setSelectedPrId(null);
+    if (selectedPr && ['Awarded', 'Closed', 'Pending Approval'].includes(selectedPr.status)) setSelectedPrId(null);
   }, [selectedPr]);
-
-  const handleAward = async (prId: string, vendorId: string) => {
-    const done = await onAwardPR(prId, vendorId);
-    if (done) {
-      setSelectedPrId(null);
-      setView('pos');
-      loadPurchaseOrders();
-    }
-  };
 
   const kpiOpenQuotes = openPrs.reduce((s, p) => s + (quotesByPr.get(p.id) || []).filter((q) => q.status !== 'Declined').length, 0);
   const pendingDelivery = purchaseOrders.filter((p) => p.deliveryStatus !== 'Received').length;
   const invoiced = purchaseOrders.reduce((s, p) => s + (p.invoicedAmount || 0), 0);
-  const unpaidReceipts = purchaseOrders.flatMap((p) => p.receipts.filter((r) => r.paymentStatus !== 'Paid'));
+  const unpaidReceipts = purchaseOrders.flatMap((p) => p.receipts.filter((r) => r.paymentStatus === 'Unpaid'));
   const unpaidTotal = unpaidReceipts.reduce((s, r) => s + (r.invoiceTotal || 0), 0);
 
   return (
@@ -604,17 +721,27 @@ export default function OrderQueryComparisonCenter({
           </div>
           <div>
             <h1 className="text-lg font-bold text-slate-900">Order Queries &amp; Quotes</h1>
-            <p className="text-xs text-slate-500">Request quotations, compare vendor quotes, award, and track purchase orders &amp; invoices.</p>
+            <p className="text-xs text-slate-500">
+              {isApprover
+                ? 'Review the vendors selected by the purchase team and approve or reject them. Approved orders are issued as purchase orders immediately.'
+                : 'Request quotations, compare and negotiate, send for approval, and track purchase orders & invoices.'}
+            </p>
           </div>
         </div>
-        <button onClick={onOpenNewPR} className="px-4 py-2.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold inline-flex items-center gap-2 cursor-pointer">
-          <Plus size={16} /> Raise New Order Query / PR
-        </button>
+        {!isApprover && (
+          <button onClick={onOpenNewPR} className="px-4 py-2.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold inline-flex items-center gap-2 cursor-pointer">
+            <Plus size={16} /> Raise New Order Query / PR
+          </button>
+        )}
       </div>
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Kpi label="Open RFQs" value={openPrs.length} hint="Awaiting quotes / comparison" />
+        {isApprover ? (
+          <Kpi label="Awaiting Approval" value={approvalPrs.length} hint={approvalPrs.length ? rs(approvalPrs.reduce((s, p) => s + (p.approval?.amount || 0), 0), 0) : 'Nothing waiting'} />
+        ) : (
+          <Kpi label="Open RFQs" value={openPrs.length} hint={approvalPrs.length ? `${approvalPrs.length} awaiting approval` : 'Awaiting quotes / comparison'} />
+        )}
         <Kpi label="Quotes Received" value={kpiOpenQuotes} hint="On open RFQs" />
         <Kpi label="Purchase Orders" value={purchaseOrders.length} hint={`${pendingDelivery} awaiting delivery`} />
         <Kpi label="Invoiced" value={rs(invoiced, 0)} hint={unpaidReceipts.length ? `${rs(unpaidTotal, 0)} unpaid (${unpaidReceipts.length} invoice${unpaidReceipts.length === 1 ? '' : 's'})` : 'Against purchase orders'} />
@@ -633,6 +760,7 @@ export default function OrderQueryComparisonCenter({
           {(
             [
               ['rfqs', `Open RFQs (${openPrs.length})`],
+              ['approvals', `Approvals${approvalPrs.length ? ` (${approvalPrs.length})` : ''}`],
               ['pos', `Purchase Orders (${purchaseOrders.length + awardedWithoutPo.length})`],
             ] as const
           ).map(([id, label]) => (
@@ -660,7 +788,20 @@ export default function OrderQueryComparisonCenter({
           benchmark={getMarketBenchmark(selectedPr.materialCode, marketBenchmarks)}
           onBack={() => setSelectedPrId(null)}
           onAddLocalQuote={() => onOpenSubmitQuote(selectedPr)}
-          onAward={handleAward}
+          readOnly={isApprover}
+          vendorPerf={vendorPerf}
+          onSendForApproval={(quote) => setApprovalDialog({ pr: selectedPr, quote })}
+          onNegotiate={(quote, peers) => setNegotiateDialog({ pr: selectedPr, quote, peers })}
+        />
+      ) : view === 'approvals' ? (
+        <ApprovalsView
+          pending={approvalPrs}
+          decided={decidedApprovals}
+          quotesByPr={quotesByPr}
+          benchmarks={marketBenchmarks}
+          vendorPerf={vendorPerf}
+          isApprover={isApprover}
+          onDecide={(pr, kind) => setDecision({ pr, kind })}
         />
       ) : view === 'rfqs' ? (
         /* ---------------- Open RFQs table ---------------- */
@@ -722,7 +863,15 @@ export default function OrderQueryComparisonCenter({
                           <span className="text-slate-400"> / {invited}</span>
                         </td>
                         <td className="px-4 py-3 text-right font-medium text-slate-800">{best !== null ? `${rs(Math.round(best * 100) / 100)} / ${pr.unit}` : '—'}</td>
-                        <td className="px-4 py-3"><Pill className={PR_STATUS_STYLE[pr.status] || PR_STATUS_STYLE.Draft}>{pr.status}</Pill></td>
+                        <td className="px-4 py-3">
+                          <Pill className={PR_STATUS_STYLE[pr.status] || PR_STATUS_STYLE.Draft}>{pr.status}</Pill>
+                          {pr.approval?.status === 'Rejected' && (
+                            <div className="mt-1"><Pill className="bg-rose-50 text-rose-800 border-rose-200">Approval rejected</Pill></div>
+                          )}
+                          {(quotesByPr.get(pr.id) || []).some((q) => q.negotiation?.status === 'Offered' || q.negotiation?.status === 'Countered') && (
+                            <div className="mt-1"><Pill className="bg-violet-50 text-violet-800 border-violet-200">Negotiating</Pill></div>
+                          )}
+                        </td>
                         <td className="px-2 py-3 text-slate-400"><ChevronRight size={16} /></td>
                       </tr>
                     );
@@ -817,19 +966,38 @@ export default function OrderQueryComparisonCenter({
                             </td>
                             <td className="px-3 py-3 text-slate-700">{po.vendorName}</td>
                             <td className="px-3 py-3 text-right font-medium text-slate-900">{rs(po.grandTotal, 0)}</td>
-                            <td className="px-3 py-3 text-slate-600">{po.deliveryBy}</td>
+                            <td className="px-3 py-3 text-slate-600">
+                              {po.deliveryBy}
+                              {(() => {
+                                if (po.deliveryStatus === 'Received' || !po.deliveryByIso) return null;
+                                const days = Math.round((Date.parse(`${po.deliveryByIso}T12:00:00Z`) - Date.parse(`${todayIso()}T12:00:00Z`)) / 86400000);
+                                const last = (po.deliveryFollowUps || []).slice(-1)[0];
+                                return (
+                                  <>
+                                    {days < 0 && <div className="text-[11px] font-semibold text-rose-700">Overdue {-days}d</div>}
+                                    {days === 0 && <div className="text-[11px] font-semibold text-amber-700">Due today</div>}
+                                    {last && (
+                                      <div className="text-[10px] text-slate-500 inline-flex items-center gap-1" title="Automatic delivery follow-up to the vendor">
+                                        <BellRing size={10} /> {last.type === 'overdue' ? 'Overdue alert' : 'Reminder'} {last.emailed ? 'emailed' : 'not emailed'} {fmtDate(last.at)}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </td>
                             <td className="px-3 py-3 min-w-[140px]">
                               <div className="text-xs text-slate-700">{po.receivedQty} / {po.orderedQty} {po.unit}</div>
                               <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                                 <div className="h-full bg-[#23408e]" style={{ width: `${pct}%` }} />
                               </div>
+                              {(po.rejectedQty || 0) > 0 && <div className="text-[11px] text-rose-700 mt-0.5">{po.rejectedQty} {po.unit} rejected</div>}
                             </td>
                             <td className="px-3 py-3 text-right text-slate-800">
                               {rs(po.invoicedAmount || 0, 0)}
                               <div className="text-[11px] text-slate-500">{po.receipts.length} invoice{po.receipts.length === 1 ? '' : 's'}</div>
                               {(() => {
                                 const next = po.receipts
-                                  .filter((r) => r.paymentStatus !== 'Paid' && r.dueDate)
+                                  .filter((r) => r.paymentStatus === 'Unpaid' && r.dueDate)
                                   .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)))[0];
                                 if (!next) return null;
                                 const info = paymentInfo(next);
@@ -842,12 +1010,14 @@ export default function OrderQueryComparisonCenter({
                             </td>
                             <td className="px-3 py-3"><Pill className={DELIVERY_STYLE[po.deliveryStatus]}>{po.deliveryStatus}</Pill></td>
                             <td className="px-3 py-3">
-                              {po.deliveryStatus !== 'Received' ? (
+                              {isApprover ? (
+                                <span className="text-xs text-slate-500">{po.approvedBy ? `Approved by ${po.approvedBy}` : '—'}</span>
+                              ) : po.deliveryStatus !== 'Received' ? (
                                 <button
                                   onClick={() => setDeliveryPo(po)}
                                   className="px-3 py-1.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                                 >
-                                  <Truck size={13} /> Record Delivery &amp; Invoice
+                                  <Truck size={13} /> Record Delivery &amp; Inspection
                                 </button>
                               ) : (
                                 <span className="text-xs text-emerald-700 inline-flex items-center gap-1"><CheckCircle2 size={13} /> Fully received</span>
@@ -864,8 +1034,9 @@ export default function OrderQueryComparisonCenter({
                                   <table className="w-full text-xs">
                                     <thead>
                                       <tr className="text-left text-slate-500">
-                                        <th className="py-1 pr-3 font-semibold">Received On</th>
-                                        <th className="py-1 pr-3 font-semibold text-right">Qty</th>
+                                        <th className="py-1 pr-3 font-semibold">GRN / Received</th>
+                                        <th className="py-1 pr-3 font-semibold">Inspection</th>
+                                        <th className="py-1 pr-3 font-semibold text-right">Accepted</th>
                                         <th className="py-1 pr-3 font-semibold">Invoice No.</th>
                                         <th className="py-1 pr-3 font-semibold">Invoice Date</th>
                                         <th className="py-1 pr-3 font-semibold text-right">As per PO</th>
@@ -881,22 +1052,43 @@ export default function OrderQueryComparisonCenter({
                                         const pay = paymentInfo(r);
                                         return (
                                         <React.Fragment key={r.id}>
-                                        <tr className="border-t border-slate-200">
-                                          <td className="py-1.5 pr-3">{fmtDate(r.receivedOn)}</td>
+                                        <tr className="border-t border-slate-200 align-top">
+                                          <td className="py-1.5 pr-3 whitespace-nowrap">
+                                            {r.grnNumber && <div className="font-semibold text-slate-800">{r.grnNumber}</div>}
+                                            {fmtDate(r.receivedOn)}
+                                            {r.onTime === false && <div className="text-[10px] font-semibold text-amber-700">Late</div>}
+                                          </td>
+                                          <td className="py-1.5 pr-3 min-w-[130px]">
+                                            {r.quality ? (
+                                              <>
+                                                <Pill className={r.quality === 'Good' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : r.quality === 'Acceptable' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-rose-50 text-rose-800 border-rose-200'}>
+                                                  {r.quality}
+                                                </Pill>
+                                                {(r.rejectedQty || 0) > 0 && (
+                                                  <div className="text-[10px] text-rose-700 mt-0.5" title={r.rejectionReason}>
+                                                    {r.rejectedQty} of {r.deliveredQty} {po.unit} rejected: {r.rejectionReason}
+                                                  </div>
+                                                )}
+                                                {r.inspectedBy && <div className="text-[10px] text-slate-500">By {r.inspectedBy}</div>}
+                                              </>
+                                            ) : (
+                                              <span className="text-slate-400">—</span>
+                                            )}
+                                          </td>
                                           <td className="py-1.5 pr-3 text-right">{r.receivedQty} {po.unit}</td>
-                                          <td className="py-1.5 pr-3 font-medium">{r.invoiceNumber}</td>
-                                          <td className="py-1.5 pr-3">{fmtDate(r.invoiceDate)}</td>
-                                          <td className="py-1.5 pr-3 text-right">{rs(r.computedTotal)}</td>
+                                          <td className="py-1.5 pr-3 font-medium">{r.invoiceNumber || '—'}</td>
+                                          <td className="py-1.5 pr-3">{r.invoiceDate ? fmtDate(r.invoiceDate) : '—'}</td>
+                                          <td className="py-1.5 pr-3 text-right">{r.invoiceTotal ? rs(r.computedTotal) : '—'}</td>
                                           <td className={`py-1.5 pr-3 text-right ${Math.abs(r.variance) > 1 ? 'text-amber-700 font-semibold' : ''}`}>
-                                            {rs(r.invoiceTotal)}{Math.abs(r.variance) > 1 ? ` (${r.variance > 0 ? '+' : ''}${rs(r.variance)})` : ''}
+                                            {r.invoiceTotal ? rs(r.invoiceTotal) : '—'}{Math.abs(r.variance) > 1 ? ` (${r.variance > 0 ? '+' : ''}${rs(r.variance)})` : ''}
                                           </td>
                                           <td className="py-1.5 pr-3 whitespace-nowrap">
                                             {r.dueDate ? fmtDate(r.dueDate) : '—'}
-                                            {r.paymentTerms && <div className="text-[10px] text-slate-500">{r.paymentTerms}</div>}
+                                            {r.paymentTerms && r.dueDate && <div className="text-[10px] text-slate-500">{r.paymentTerms}</div>}
                                           </td>
                                           <td className="py-1.5 pr-3 whitespace-nowrap">
                                             <Pill className={pay.className}>{pay.label}</Pill>
-                                            {r.paymentStatus !== 'Paid' && (
+                                            {r.paymentStatus === 'Unpaid' && !isApprover && (
                                               <button
                                                 onClick={() => markPaid(po, r)}
                                                 disabled={payingId === r.id}
@@ -905,7 +1097,7 @@ export default function OrderQueryComparisonCenter({
                                                 {payingId === r.id ? <Loader2 size={11} className="animate-spin" /> : <Banknote size={11} />} Mark Paid
                                               </button>
                                             )}
-                                            {r.reminderEmailStatus === 'sent' && r.paymentStatus !== 'Paid' && (
+                                            {r.reminderEmailStatus === 'sent' && r.paymentStatus === 'Unpaid' && (
                                               <div className="text-[10px] text-slate-500 mt-0.5 inline-flex items-center gap-1"><BellRing size={10} /> Reminder emailed</div>
                                             )}
                                           </td>
@@ -918,7 +1110,7 @@ export default function OrderQueryComparisonCenter({
                                         </tr>
                                         {r.lineItems && r.lineItems.length > 0 && (
                                           <tr>
-                                            <td colSpan={10} className="pb-2 pt-0.5 text-[11px] text-slate-500">
+                                            <td colSpan={11} className="pb-2 pt-0.5 text-[11px] text-slate-500">
                                               Line items: {r.lineItems.map((li) => `${li.description}${li.quantity ? ` - ${li.quantity} ${li.unit || ''}` : ''}${li.amount ? ` (${rs(li.amount)})` : ''}`).join('; ')}
                                             </td>
                                           </tr>
@@ -947,6 +1139,7 @@ export default function OrderQueryComparisonCenter({
         <DeliveryDialog
           po={deliveryPo}
           projectName={projects.find((p) => p.id === deliveryPo.projectId)?.name || deliveryPo.projectName}
+          inspectorName={currentUser.name}
           onClose={() => setDeliveryPo(null)}
           onSubmit={async (input) => {
             const result = await onRecordDelivery(deliveryPo, input);
@@ -954,8 +1147,17 @@ export default function OrderQueryComparisonCenter({
               setDeliveryPo(null);
               setExpandedPo(deliveryPo.poNumber);
               const due = result.receipt?.dueDate;
+              refreshVendorPerf();
+              if (!(input.acceptedQty > 0)) {
+                setNotice(
+                  `${result.receipt?.grnNumber || 'Delivery'} recorded: all ${input.receivedQty} ${deliveryPo.unit} rejected (${input.rejectionReason}). Nothing was added to stock; the vendor has been emailed to replace the material.`
+                );
+                loadPurchaseOrders();
+                return result;
+              }
               setNotice(
-                `Recorded ${input.receivedQty} ${deliveryPo.unit} against ${deliveryPo.poNumber} with invoice ${input.invoiceNumber}. ` +
+                `${result.receipt?.grnNumber ? `${result.receipt.grnNumber}: ` : ''}accepted ${input.acceptedQty} of ${input.receivedQty} ${deliveryPo.unit} against ${deliveryPo.poNumber} with invoice ${input.invoiceNumber}. ` +
+                  (input.receivedQty > input.acceptedQty ? `${round2(input.receivedQty - input.acceptedQty)} ${deliveryPo.unit} rejected - the vendor has been emailed. ` : '') +
                   (result.stockUpdated
                     ? `Stock added to ${result.projectName || deliveryPo.projectName}${result.materialCreated ? ' (new catalogue item created)' : ''}, ` +
                       `project estimation cost ${result.estimationDelta !== undefined ? `${result.estimationDelta >= 0 ? '+' : '-'}${rs(Math.abs(result.estimationDelta), 0)}` : 'updated'}, ` +
@@ -968,6 +1170,440 @@ export default function OrderQueryComparisonCenter({
             return result;
           }}
         />
+      )}
+
+      {approvalDialog && (
+        <SendForApprovalDialog
+          pr={approvalDialog.pr}
+          quote={approvalDialog.quote}
+          onClose={() => setApprovalDialog(null)}
+          onSubmit={async (note) => {
+            await requestApproval(approvalDialog.pr, approvalDialog.quote, note);
+            setApprovalDialog(null);
+          }}
+        />
+      )}
+
+      {negotiateDialog && (
+        <NegotiateDialog
+          pr={negotiateDialog.pr}
+          quote={negotiateDialog.quote}
+          peers={negotiateDialog.peers}
+          benchmark={getMarketBenchmark(negotiateDialog.pr.materialCode, marketBenchmarks)}
+          lastBuyRate={materials.find((m) => m.id === negotiateDialog.pr.materialId)?.unitCost}
+          onClose={() => setNegotiateDialog(null)}
+          onSubmit={async (rate, note) => {
+            await sendOffer(negotiateDialog.pr, negotiateDialog.quote, rate, note);
+            setNegotiateDialog(null);
+          }}
+        />
+      )}
+
+      {decision && (
+        <DecisionDialog
+          pr={decision.pr}
+          kind={decision.kind}
+          onClose={() => setDecision(null)}
+          onSubmit={async (comment) => {
+            await decideApproval(decision.pr, decision.kind, comment);
+            setDecision(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Small dialogs: send for approval, counter-offer, approve / reject   */
+/* ------------------------------------------------------------------ */
+
+function DialogShell({
+  title,
+  subtitle,
+  onClose,
+  onSubmit,
+  submitLabel,
+  submitClass = 'bg-[#23408e] hover:bg-[#1b3170]',
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  onSubmit: () => Promise<void>;
+  submitLabel: string;
+  submitClass?: string;
+  children: React.ReactNode;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <form
+        noValidate
+        role="dialog"
+        aria-label={title}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            await onSubmit();
+          } catch (err) {
+            setError(userMessage(err, 'Something went wrong. Please try again.'));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto"
+      >
+        <div className="flex items-start justify-between px-6 py-4 border-b border-slate-200">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+            {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          {children}
+          {error && <p role="alert" className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
+        </div>
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-200 cursor-pointer">Cancel</button>
+          <button type="submit" disabled={busy} className={`px-5 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-60 cursor-pointer inline-flex items-center gap-2 ${submitClass}`}>
+            {busy && <Loader2 size={15} className="animate-spin" />} {submitLabel}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+const dialogField =
+  'w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30 focus:border-[#23408e]';
+
+function SendForApprovalDialog({ pr, quote, onClose, onSubmit }: { pr: ProjectRequirement; quote: VendorQuotation; onClose: () => void; onSubmit: (note: string) => Promise<void> }) {
+  const [note, setNote] = useState('');
+  const negotiated = quote.negotiation && quote.negotiation.originalRate > quote.quotedRate;
+  return (
+    <DialogShell title="Send for approval" subtitle={`${pr.id} • ${pr.materialName}`} onClose={onClose} onSubmit={() => onSubmit(note.trim())} submitLabel="Send for Approval">
+      <div className="rounded-xl bg-[#f5f8fd] border border-[#d9e3f5] p-4 text-sm grid grid-cols-2 gap-x-4 gap-y-1">
+        <span className="text-slate-500">Vendor</span><span className="text-right font-semibold text-slate-900">{quote.vendorName}</span>
+        <span className="text-slate-500">Unit rate</span><span className="text-right font-semibold text-slate-900">{rs(quote.quotedRate)} / {quote.unit}</span>
+        {negotiated && (<><span className="text-slate-500">Negotiated from</span><span className="text-right text-emerald-700 font-semibold">{rs(quote.negotiation!.originalRate)}</span></>)}
+        <span className="text-slate-500">Total (incl. GST & charges)</span><span className="text-right font-bold text-slate-900">{rs(quote.totalAmount)}</span>
+        <span className="text-slate-500">Rank</span><span className="text-right text-slate-900">#{quote.rank ?? '—'} • score {quote.evaluationScore?.toFixed(1) ?? '—'}</span>
+      </div>
+      <label className="block text-sm font-medium text-slate-700">
+        Reason for selecting this vendor
+        <textarea
+          id="approval-note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={500}
+          rows={3}
+          placeholder={quote.rank && quote.rank > 1 ? 'Required context: why not the top-ranked vendor?' : 'e.g. Lowest landed cost, reliable delivery'}
+          className={`${dialogField} mt-1`}
+        />
+      </label>
+      <p className="text-xs text-slate-500">The approver is notified. The purchase order is generated and emailed to the vendor as soon as it is approved.</p>
+    </DialogShell>
+  );
+}
+
+/** Suggested counter-offer: the lowest credible benchmark below the vendor's rate, asking at most 10% per round */
+function suggestTarget(quote: VendorQuotation, peers: VendorQuotation[], marketRate?: number, lastBuyRate?: number, targetBudgetRate?: number) {
+  const current = quote.quotedRate;
+  const others = peers.filter((p) => p.vendorId !== quote.vendorId && p.status !== 'Declined' && p.quotedRate > 0);
+  const refs = [
+    others.length ? { label: 'Lowest competing quote', rate: Math.min(...others.map((p) => p.quotedRate)) } : null,
+    marketRate ? { label: 'Market rate', rate: marketRate } : null,
+    lastBuyRate ? { label: 'Last purchase rate', rate: lastBuyRate } : null,
+    targetBudgetRate ? { label: 'Target budget rate', rate: targetBudgetRate } : null,
+  ].filter((r): r is { label: string; rate: number } => Boolean(r && r.rate > 0));
+  const below = refs.filter((r) => r.rate < current);
+  const roundRate = (n: number) => (current >= 100 ? Math.round(n) : round2(n));
+  const floor = current * 0.9;
+  if (below.length) {
+    const lowest = below.reduce((a, b) => (b.rate < a.rate ? b : a));
+    const rate = roundRate(Math.max(lowest.rate, floor));
+    return {
+      refs,
+      rate: rate >= current ? roundRate(current * 0.97) : rate,
+      reason: lowest.rate < floor ? `${lowest.label} is ${rs(lowest.rate)}; asking for at most 10% off in one round.` : `Matches the ${lowest.label.toLowerCase()}.`,
+    };
+  }
+  return { refs, rate: roundRate(current * 0.97), reason: 'No benchmark is lower than this quote, so the suggestion asks for 3% off.' };
+}
+
+function NegotiateDialog({
+  pr,
+  quote,
+  peers,
+  benchmark,
+  lastBuyRate,
+  onClose,
+  onSubmit,
+}: {
+  pr: ProjectRequirement;
+  quote: VendorQuotation;
+  peers: VendorQuotation[];
+  benchmark?: MarketPriceBenchmark;
+  lastBuyRate?: number;
+  onClose: () => void;
+  onSubmit: (rate: number, note: string) => Promise<void>;
+}) {
+  const suggestion = useMemo(
+    () => suggestTarget(quote, peers, benchmark?.currentMarketPrice, lastBuyRate, pr.targetBudgetRate),
+    [quote, peers, benchmark, lastBuyRate, pr.targetBudgetRate]
+  );
+  const [rate, setRate] = useState(String(suggestion.rate));
+  const [note, setNote] = useState('');
+  const r = Number(rate) || 0;
+  const qty = quote.quantity || 0;
+  const offersLeft = 3 - (quote.negotiation?.buyerOffers || 0);
+  return (
+    <DialogShell
+      title={`Negotiate with ${quote.vendorName}`}
+      subtitle={`${pr.id} • ${pr.materialName} • ${offersLeft} counter-offer${offersLeft === 1 ? '' : 's'} left`}
+      onClose={onClose}
+      onSubmit={async () => {
+        if (!(r > 0) || r >= quote.quotedRate) throw new UserFacingError(`The offer must be below the current rate of ${rs(quote.quotedRate)}.`);
+        await onSubmit(r, note.trim());
+      }}
+      submitLabel="Send Counter-offer"
+    >
+      <div className="rounded-xl border border-slate-200 overflow-hidden text-sm">
+        <div className="flex justify-between px-4 py-2 bg-slate-50"><span className="text-slate-600">Vendor's current rate</span><span className="font-bold text-slate-900">{rs(quote.quotedRate)} / {quote.unit}</span></div>
+        {suggestion.refs.map((ref) => (
+          <div key={ref.label} className="flex justify-between px-4 py-1.5 border-t border-slate-100">
+            <span className="text-slate-600">{ref.label}</span>
+            <span className={ref.rate < quote.quotedRate ? 'text-emerald-700 font-semibold' : 'text-slate-700'}>{rs(ref.rate)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="rounded-xl bg-violet-50 border border-violet-200 p-3 text-sm text-violet-900 inline-flex items-start gap-2">
+        <Sparkles size={15} className="mt-0.5 shrink-0" />
+        <span>Suggested offer <strong>{rs(suggestion.rate)}</strong> / {quote.unit}. {suggestion.reason}</span>
+      </div>
+      <label className="block text-sm font-medium text-slate-700">
+        Your offer (Rs. per {quote.unit}, excl. GST) *
+        <input id="neg-rate" type="number" min="0" step="any" value={rate} onChange={(e) => setRate(e.target.value)} className={`${dialogField} mt-1`} />
+        {r > 0 && r < quote.quotedRate && (
+          <span className="mt-1 block text-xs text-emerald-700">
+            {((1 - r / quote.quotedRate) * 100).toFixed(1)}% below the quote • saving about {rs(round2((quote.quotedRate - r) * qty), 0)} on {qty} {quote.unit}
+          </span>
+        )}
+      </label>
+      <label className="block text-sm font-medium text-slate-700">
+        Message to the vendor
+        <textarea id="neg-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} rows={2} placeholder="e.g. We have a lower quote; can you match this rate for a confirmed order?" className={`${dialogField} mt-1`} />
+      </label>
+      <p className="text-xs text-slate-500">The vendor gets an email with their secure link and can accept, send a counter-rate, or keep their quoted rate. Competing vendors' names are never shown to them.</p>
+    </DialogShell>
+  );
+}
+
+function DecisionDialog({ pr, kind, onClose, onSubmit }: { pr: ProjectRequirement; kind: 'approve' | 'reject'; onClose: () => void; onSubmit: (comment: string) => Promise<void> }) {
+  const [comment, setComment] = useState('');
+  const a = pr.approval;
+  return (
+    <DialogShell
+      title={kind === 'approve' ? 'Approve and issue PO' : 'Reject selection'}
+      subtitle={`${pr.id} • ${pr.materialName} • ${a?.vendorName} • ${rs(a?.amount || 0)}`}
+      onClose={onClose}
+      onSubmit={async () => {
+        if (kind === 'reject' && !comment.trim()) throw new UserFacingError('Please give a reason so the purchase team knows what to change.');
+        await onSubmit(comment.trim());
+      }}
+      submitLabel={kind === 'approve' ? 'Approve & Issue PO' : 'Reject'}
+      submitClass={kind === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}
+    >
+      <p className="text-sm text-slate-700">
+        {kind === 'approve'
+          ? `Approving issues purchase order for ${rs(a?.amount || 0)} to ${a?.vendorName} and emails it to them immediately.`
+          : 'The requirement goes back to the purchase team for comparison or negotiation.'}
+      </p>
+      <label className="block text-sm font-medium text-slate-700">
+        {kind === 'approve' ? 'Comment (optional)' : 'Reason for rejection *'}
+        <textarea id="decision-comment" value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} rows={3} className={`${dialogField} mt-1`} />
+      </label>
+    </DialogShell>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Approvals queue                                                     */
+/* ------------------------------------------------------------------ */
+
+const NEG_STATUS: Record<string, { label: string; cls: string }> = {
+  Offered: { label: 'Waiting for vendor', cls: 'bg-violet-50 text-violet-800 border-violet-200' },
+  Countered: { label: 'Vendor countered', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
+  Accepted: { label: 'Offer accepted', cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  Rejected: { label: 'Vendor kept rate', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
+};
+const ROUND_TEXT: Record<NegotiationRound['action'], string> = {
+  offer: 'We offered',
+  accept: 'Vendor accepted',
+  counter: 'Vendor countered',
+  reject: 'Vendor kept',
+  revise: 'Vendor revised quote to',
+};
+
+/** Negotiation status and history on a quotation card */
+function NegotiationTrail({ negotiation, unit }: { negotiation: NonNullable<VendorQuotation['negotiation']>; unit: string }) {
+  const s = NEG_STATUS[negotiation.status] || NEG_STATUS.Offered;
+  return (
+    <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/40 p-2.5 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-violet-900 inline-flex items-center gap-1"><Handshake size={12} /> Negotiation</span>
+        <Pill className={s.cls}>{s.label}</Pill>
+      </div>
+      <ol className="mt-1.5 space-y-0.5 text-slate-700">
+        {negotiation.rounds.map((r, i) => (
+          <li key={i} className="flex justify-between gap-2">
+            <span className="truncate" title={r.note}>{ROUND_TEXT[r.action]} {rs(r.rate)}/{unit}{r.note ? ` - "${r.note}"` : ''}</span>
+            <span className="text-slate-400 shrink-0">{fmtDate(r.at)}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function RatingBadge({ perf, manual }: { perf?: VendorPerformance; manual?: number }) {
+  const r = displayRating(perf, manual || 0);
+  if (!r.value) return null;
+  const tip = perf && perf.rating !== null ? perf.criteria.map((c) => `${c.label}: ${c.score === null ? 'no data' : Math.round(c.score)} - ${c.detail}`).join('\n') : 'Manual rating (no purchase history yet)';
+  return (
+    <span title={tip} className="inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold whitespace-nowrap bg-amber-50 text-amber-800 border-amber-200">
+      ★ {r.value.toFixed(1)}{r.measured ? '' : ' (manual)'}
+    </span>
+  );
+}
+
+function ApprovalsView({
+  pending,
+  decided,
+  quotesByPr,
+  benchmarks,
+  vendorPerf,
+  isApprover,
+  onDecide,
+}: {
+  pending: ProjectRequirement[];
+  decided: ProjectRequirement[];
+  quotesByPr: Map<string, VendorQuotation[]>;
+  benchmarks: MarketPriceBenchmark[];
+  vendorPerf: Map<string, VendorPerformance>;
+  isApprover: boolean;
+  onDecide: (pr: ProjectRequirement, kind: 'approve' | 'reject') => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {pending.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">
+          No orders are waiting for approval.
+        </div>
+      ) : (
+        pending.map((pr) => {
+          const a = pr.approval!;
+          const benchmark = getMarketBenchmark(pr.materialCode, benchmarks);
+          const ranked = rankAndScoreQuotes(quotesByPr.get(pr.id) || [], benchmark?.currentMarketPrice, pr.quantity);
+          const chosen = ranked.find((q) => q.vendorId === a.vendorId);
+          const lowest = ranked.length ? Math.min(...ranked.map(landedCostPerUnit)) : 0;
+          const waiting = Math.max(0, Math.round((Date.now() - Date.parse(a.requestedAt)) / 86400000));
+          return (
+            <div key={pr.id} className="bg-white rounded-xl border border-amber-300 shadow-sm overflow-hidden">
+              <div className="px-5 py-3 bg-amber-50 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs text-amber-800 font-medium">{pr.id} • {pr.projectName} • requested by {a.requestedBy} {waiting ? `${waiting} day${waiting === 1 ? '' : 's'} ago` : 'today'}</p>
+                  <h3 className="text-base font-bold text-slate-900">{pr.materialName} — {pr.quantity} {pr.unit}</h3>
+                </div>
+                {isApprover ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => onDecide(pr, 'reject')} className="px-3.5 py-2 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 text-sm font-semibold cursor-pointer">Reject</button>
+                    <button onClick={() => onDecide(pr, 'approve')} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer">
+                      <CheckCircle2 size={15} /> Approve &amp; Issue PO
+                    </button>
+                  </div>
+                ) : (
+                  <Pill className="bg-amber-100 text-amber-900 border-amber-300">Waiting for approver</Pill>
+                )}
+              </div>
+              <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+                <div><dt className="text-xs text-slate-500">Selected vendor</dt><dd className="font-semibold text-slate-900">{a.vendorName}</dd><RatingBadge perf={vendorPerf.get(a.vendorId)} /></div>
+                <div><dt className="text-xs text-slate-500">Unit rate</dt><dd className="font-semibold text-slate-900">{rs(a.unitRate)} / {pr.unit}</dd>
+                  {chosen?.negotiation && chosen.negotiation.originalRate > chosen.quotedRate && <dd className="text-xs text-emerald-700">Negotiated from {rs(chosen.negotiation.originalRate)}</dd>}
+                </div>
+                <div><dt className="text-xs text-slate-500">Total amount</dt><dd className="font-bold text-slate-900">{rs(a.amount)}</dd></div>
+                <div><dt className="text-xs text-slate-500">Rank</dt><dd className="font-semibold text-slate-900">#{chosen?.rank ?? '—'} of {ranked.length} • score {chosen?.evaluationScore?.toFixed(1) ?? '—'}</dd>
+                  {chosen && landedCostPerUnit(chosen) > lowest + 0.01 && <dd className="text-xs text-amber-700">Not the lowest landed price</dd>}
+                </div>
+                <div><dt className="text-xs text-slate-500">Market rate</dt><dd className="text-slate-900">{benchmark ? `${rs(benchmark.currentMarketPrice)} / ${benchmark.unit}` : '—'}</dd></div>
+              </div>
+              {a.note && <p className="px-5 pb-3 text-sm text-slate-700"><span className="text-slate-500">Reason: </span>{a.note}</p>}
+              {ranked.length > 0 && (
+                <div className="px-5 pb-4 overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b border-slate-200">
+                        <th className="py-1.5 pr-3 font-semibold">#</th>
+                        <th className="py-1.5 pr-3 font-semibold">Vendor</th>
+                        <th className="py-1.5 pr-3 font-semibold text-right">Rate</th>
+                        <th className="py-1.5 pr-3 font-semibold text-right">Landed / unit</th>
+                        <th className="py-1.5 pr-3 font-semibold text-right">Total</th>
+                        <th className="py-1.5 pr-3 font-semibold">Delivery</th>
+                        <th className="py-1.5 pr-3 font-semibold">Payment</th>
+                        <th className="py-1.5 font-semibold">Rating</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ranked.map((q) => (
+                        <tr key={q.id} className={`border-b border-slate-100 ${q.vendorId === a.vendorId ? 'bg-emerald-50 font-semibold' : ''}`}>
+                          <td className="py-1.5 pr-3">{q.rank}</td>
+                          <td className="py-1.5 pr-3">{q.vendorName}{q.vendorId === a.vendorId ? ' (selected)' : ''}</td>
+                          <td className="py-1.5 pr-3 text-right">{rs(q.quotedRate)}</td>
+                          <td className="py-1.5 pr-3 text-right">{rs(round2(landedCostPerUnit(q)))}</td>
+                          <td className="py-1.5 pr-3 text-right">{rs(q.totalAmount)}</td>
+                          <td className="py-1.5 pr-3">{q.deliveryDays} days</td>
+                          <td className="py-1.5 pr-3">{q.paymentTerms}</td>
+                          <td className="py-1.5"><RatingBadge perf={vendorPerf.get(q.vendorId)} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {decided.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <h3 className="px-5 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">Recent decisions</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {decided.map((pr) => (
+                  <tr key={pr.id} className="border-b border-slate-100 last:border-0">
+                    <td className="px-5 py-2 font-mono text-xs text-slate-600">{pr.id}</td>
+                    <td className="px-3 py-2 text-slate-900">{pr.materialName}</td>
+                    <td className="px-3 py-2 text-slate-700">{pr.approval?.vendorName}</td>
+                    <td className="px-3 py-2 text-right text-slate-900">{rs(pr.approval?.amount || 0)}</td>
+                    <td className="px-3 py-2">
+                      <Pill className={pr.approval?.status === 'Approved' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'}>{pr.approval?.status}</Pill>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-500">{pr.approval?.decidedBy} • {fmtDate(pr.approval?.decidedAt)}{pr.approval?.comment ? ` • "${pr.approval.comment}"` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -984,7 +1620,10 @@ function RfqDetail({
   benchmark,
   onBack,
   onAddLocalQuote,
-  onAward,
+  readOnly,
+  vendorPerf,
+  onSendForApproval,
+  onNegotiate,
 }: {
   pr: ProjectRequirement;
   quotes: VendorQuotation[];
@@ -992,7 +1631,10 @@ function RfqDetail({
   benchmark?: MarketPriceBenchmark;
   onBack: () => void;
   onAddLocalQuote: () => void;
-  onAward: (prId: string, vendorId: string) => void;
+  readOnly: boolean;
+  vendorPerf: Map<string, VendorPerformance>;
+  onSendForApproval: (quote: VendorQuotation) => void;
+  onNegotiate: (quote: VendorQuotation, peers: VendorQuotation[]) => void;
 }) {
   const ranked = rankAndScoreQuotes(quotes, benchmark?.currentMarketPrice, pr.quantity);
   const declined = quotes.filter((q) => q.status === 'Declined');
@@ -1019,13 +1661,15 @@ function RfqDetail({
                 <span className="font-bold">{rs(benchmark.currentMarketPrice)} / {benchmark.unit}</span>
               </div>
             )}
-            <button
-              onClick={onAddLocalQuote}
-              className="px-3.5 py-2 rounded-lg bg-white text-[#23408e] hover:bg-blue-50 text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-              title="Enter a quotation from a local vendor who is not registered in the system"
-            >
-              <Plus size={15} /> Add Local Vendor Quote
-            </button>
+            {!readOnly && (
+              <button
+                onClick={onAddLocalQuote}
+                className="px-3.5 py-2 rounded-lg bg-white text-[#23408e] hover:bg-blue-50 text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                title="Enter a quotation from a local vendor who is not registered in the system"
+              >
+                <Plus size={15} /> Add Local Vendor Quote
+              </button>
+            )}
           </div>
         </div>
         <dl className="grid grid-cols-2 md:grid-cols-5 gap-4 px-5 py-4 text-sm">
@@ -1043,6 +1687,13 @@ function RfqDetail({
           ))}
         </dl>
       </div>
+
+      {pr.approval?.status === 'Rejected' && (
+        <div role="status" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          <strong>Not approved:</strong> {pr.approval.decidedBy} rejected {pr.approval.vendorName} ({rs(pr.approval.amount)}) on {fmtDate(pr.approval.decidedAt)}
+          {pr.approval.comment ? ` - "${pr.approval.comment}"` : ''}. Negotiate or choose another vendor, then send for approval again.
+        </div>
+      )}
 
       {/* Comparison */}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1076,6 +1727,7 @@ function RfqDetail({
                       <div className="min-w-0">
                         <h4 className="font-semibold text-sm text-slate-900 truncate" title={quote.vendorName}>{quote.vendorName}</h4>
                         <div className="flex flex-wrap gap-1 mt-0.5">
+                          <RatingBadge perf={vendorPerf.get(quote.vendorId)} manual={vendors.find((v) => v.id === quote.vendorId)?.rating} />
                           {isTop && <Pill className="bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">Best value</Pill>}
                           {quote.submittedVia === 'vendor-portal' && <Pill className="bg-emerald-50 text-emerald-800 border-emerald-200">Vendor portal</Pill>}
                           {quote.isLocalVendor && <Pill className="bg-sky-50 text-sky-800 border-sky-200">Local vendor</Pill>}
@@ -1093,6 +1745,9 @@ function RfqDetail({
                       <span className="text-slate-500">Unit rate (excl. GST)</span>
                       <span className="text-base font-bold text-slate-900">{rs(quote.quotedRate)} <span className="text-[10px] font-normal text-slate-500">/ {quote.unit}</span></span>
                     </div>
+                    {quote.negotiation && quote.negotiation.originalRate !== quote.quotedRate && (
+                      <div className="flex justify-between"><span className="text-slate-500">Originally quoted</span><span className="text-slate-500 line-through">{rs(quote.negotiation.originalRate)}</span></div>
+                    )}
                     <div className="flex justify-between"><span className="text-slate-500">Qty can supply</span><span className={`font-semibold ${partial ? 'text-rose-700' : 'text-slate-900'}`}>{quote.quantity} {quote.unit}{partial ? ' (partial)' : ''}</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">GST</span><span className="font-semibold text-slate-900">{quote.gstRate}%</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">Freight / transport</span><span className="font-semibold text-slate-900">{quote.freightCharges ? rs(quote.freightCharges) : 'Included'}</span></div>
@@ -1123,14 +1778,36 @@ function RfqDetail({
                   </dl>
                 </div>
 
-                <button
-                  onClick={() => onAward(pr.id, quote.vendorId)}
-                  className={`mt-3 w-full py-2 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer ${
-                    isTop ? 'bg-[#23408e] hover:bg-[#1b3170] text-white' : 'bg-white border border-[#23408e] text-[#23408e] hover:bg-[#f5f8fd]'
-                  }`}
-                >
-                  <CheckCircle2 size={15} /> Award to {quote.vendorName.split(' ')[0]}
-                </button>
+                {quote.negotiation && <NegotiationTrail negotiation={quote.negotiation} unit={quote.unit} />}
+
+                {!readOnly && (
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {(() => {
+                      const waiting = quote.negotiation?.status === 'Offered';
+                      const used = (quote.negotiation?.buyerOffers || 0) >= 3;
+                      return (
+                        <button
+                          onClick={() => onNegotiate(quote, ranked)}
+                          disabled={waiting || used}
+                          title={waiting ? 'Waiting for the vendor to reply to your offer' : used ? 'Maximum of 3 counter-offers reached' : 'Send a counter-offer to this vendor'}
+                          className="py-2 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer border border-violet-300 text-violet-800 hover:bg-violet-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Handshake size={15} /> {waiting ? 'Offer sent' : 'Negotiate'}
+                        </button>
+                      );
+                    })()}
+                    <button
+                      onClick={() => onSendForApproval(quote)}
+                      disabled={quote.negotiation?.status === 'Offered'}
+                      title={quote.negotiation?.status === 'Offered' ? 'Wait for the vendor to reply to your counter-offer first' : 'Send this vendor to the approver'}
+                      className={`py-2 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                        isTop ? 'bg-[#23408e] hover:bg-[#1b3170] text-white' : 'bg-white border border-[#23408e] text-[#23408e] hover:bg-[#f5f8fd]'
+                      }`}
+                    >
+                      <CheckCircle2 size={15} /> Send for Approval
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

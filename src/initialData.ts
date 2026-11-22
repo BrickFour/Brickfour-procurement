@@ -18,6 +18,14 @@ export const INITIAL_USERS: User[] = [
     title: 'Purchase Executive (EXECUTIVE) - Purchase',
   },
   {
+    id: 'approver-1',
+    name: 'Purchase Approver',
+    email: 'approver@brickfour.com',
+    password: 'Approver@123',
+    role: 'approver',
+    title: 'Purchase Approver',
+  },
+  {
     id: 'sm-1',
     name: 'Site Manager 1',
     email: 'sitemanager1@brickfour.com',

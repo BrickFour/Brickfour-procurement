@@ -1,5 +1,6 @@
 import { useState, useMemo, FormEvent, Fragment, ReactNode } from 'react';
-import { Material, MaterialCategory, Project, User, InventoryTransaction, RateHistoryPoint, BillType, Vendor, ProjectRequirement, VendorQuotation } from '../types';
+import { Material, MaterialCategory, Project, User, InventoryTransaction, RateHistoryPoint, BillType, Vendor, ProjectRequirement, VendorQuotation, MaterialVerification } from '../types';
+import MaterialVerificationPanel, { newVerificationDraft, verificationError, toVerification, VerificationDraft } from './MaterialVerificationPanel';
 import { Search, Filter, Plus, Trash2, ArrowUpRight, ArrowDownLeft, AlertCircle, AlertTriangle, Bell, X, HelpCircle, Lock, TrendingUp, Hash, Receipt, FileText, Check, ShoppingCart, BookOpen, Upload, Users } from 'lucide-react';
 import BulkUploadModal from './BulkUploadModal';
 import type { MaterialImportPlan, VendorImportPlan } from '../lib/bulkImport';
@@ -46,6 +47,7 @@ interface MaterialListProps {
       gstAmount?: number;
       baseAmount?: number;
       vendorGstin?: string;
+      verification?: MaterialVerification;
     }
   ) => void;
   onOpenRaiseQueryModalForMaterial?: (materialId: string, projectId: string) => void;
@@ -132,6 +134,7 @@ export default function MaterialList({
   const [quickBillNumber, setQuickBillNumber] = useState('');
   const [quickGstRate, setQuickGstRate] = useState<number>(18);
   const [quickVendorGstin, setQuickVendorGstin] = useState('');
+  const [quickVerification, setQuickVerification] = useState<VerificationDraft>(() => newVerificationDraft(currentUser?.name || ''));
 
   // States for adding new material
   const [newMatName, setNewMatName] = useState('');
@@ -313,10 +316,27 @@ export default function MaterialList({
       return;
     }
 
+    // Material verification: only the accepted quantity is added to stock and billed
+    let verification: MaterialVerification | undefined;
+    let stockQty = qtyNum;
+    if (activeQuickTx.type === 'addition') {
+      const vError = verificationError(quickVerification, qtyNum);
+      if (vError) {
+        alert(vError);
+        return;
+      }
+      verification = toVerification(quickVerification, qtyNum);
+      if (!(verification.acceptedQty > 0)) {
+        alert('All delivered material was rejected, so nothing is added to stock. Please return it to the vendor.');
+        return;
+      }
+      stockQty = verification.acceptedQty;
+    }
+
     const rateNum = Number(quickRate) || mat.unitCost || 0;
     const quickFinancials = calculateBillFinancials(
       quickBillType,
-      qtyNum,
+      stockQty,
       rateNum,
       quickGstRate,
       quickTotalPrice !== '' ? Number(quickTotalPrice) : undefined
@@ -327,8 +347,10 @@ export default function MaterialList({
     onQuickTransaction(
       mat.id,
       activeQuickTx.type,
-      qtyNum,
-      quickNotes.trim(),
+      stockQty,
+      verification && verification.rejectedQty > 0
+        ? `${quickNotes.trim()} (${verification.rejectedQty} ${mat.unit} rejected: ${verification.rejectionReason})`
+        : quickNotes.trim(),
       activeQuickTx.type === 'addition'
         ? {
             rate: rateNum,
@@ -342,10 +364,12 @@ export default function MaterialList({
             vendorName: quickVendor.trim() || mat.vendorName || (quickBillType === 'GST' ? 'Authorized GST Supplier' : 'Local Unregistered Vendor'),
             invoiceUrl: quickInvoiceUrl,
             invoiceFileName: quickInvoiceFileName,
+            verification,
           }
         : undefined
     );
 
+    setQuickVerification(newVerificationDraft(currentUser?.name || ''));
     setActiveQuickTx(null);
     setQuickQty('');
     setQuickNotes('');
@@ -994,6 +1018,14 @@ export default function MaterialList({
                                       )}
                                     </div>
                                   </div>
+
+                                  <MaterialVerificationPanel
+                                    idPrefix={`quick-verify-${mat.id}`}
+                                    unit={mat.unit}
+                                    delivered={Number(quickQty) || 0}
+                                    value={quickVerification}
+                                    onChange={setQuickVerification}
+                                  />
 
                                   <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100">
                                     <button

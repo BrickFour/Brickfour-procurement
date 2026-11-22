@@ -34,6 +34,16 @@ import {
   GST_STATES,
 } from './purchaseOrder.js';
 import type { PurchaseOrderData, PurchaseOrderLine } from './purchaseOrder.js';
+import {
+  computeVendorPerformance,
+  computeSavingsBasis,
+  buildPendingReport,
+  buildMonthlyReport,
+  buildSavingsReport,
+  reportWorkbook,
+  poDeliveryIso,
+  localIso,
+} from './purchaseReports.js';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 import {
@@ -178,7 +188,15 @@ type NotificationType =
   | 'payment-recorded'
   | 'query-raised'
   | 'query-reply'
-  | 'query-status';
+  | 'query-status'
+  | 'approval-requested'
+  | 'approval-approved'
+  | 'approval-rejected'
+  | 'negotiation-offer'
+  | 'negotiation-response'
+  | 'delivery-due'
+  | 'delivery-overdue'
+  | 'material-rejected';
 
 /**
  * Creates an in-app notification. `id` doubles as a de-duplication key: the same event
@@ -193,7 +211,7 @@ async function notify(
     message: string;
     severity?: 'info' | 'success' | 'warning' | 'danger';
     projectId?: string;
-    link?: { view: 'rfqs' | 'pos' | 'queries'; prId?: string; poNumber?: string; queryId?: string };
+    link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals'; prId?: string; poNumber?: string; queryId?: string };
     /** Users who already know about it (e.g. the person who caused it) - no unread badge / pop-up for them */
     readBy?: string[];
   }
@@ -316,15 +334,32 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
 
       // Preserve each document's original creation time across updates (used for list ordering)
       const keys = cleanUpserts.map((doc: any) => doc[keyField]);
+      // Fields the server writes itself (negotiation, approval, PO link) are also read so a stale browser copy cannot overwrite them
+      const serverOwned =
+        collection === 'vendor_quotations'
+          ? { negotiation: 1, quotedRate: 1, totalAmount: 1 }
+          : collection === 'project_requirements'
+            ? { approval: 1, status: 1, selectedVendorId: 1, purchaseOrder: 1 }
+            : {};
       const existing = keys.length
-        ? await col.find({ [keyField]: { $in: keys } }, { projection: { [keyField]: 1, _createdAt: 1 } }).toArray()
+        ? await col.find({ [keyField]: { $in: keys } }, { projection: { [keyField]: 1, _createdAt: 1, ...serverOwned } }).toArray()
         : [];
       const existingByKey = new Map(existing.map((d: any) => [d[keyField], d]));
       const now = new Date();
 
-      for (const doc of cleanUpserts) {
-        const key = doc[keyField];
-        const prev = existingByKey.get(key);
+      for (const raw of cleanUpserts) {
+        const key = raw[keyField];
+        const prev: any = existingByKey.get(key);
+        let doc = raw;
+        if (prev && collection === 'vendor_quotations' && (prev.negotiation?.version || 0) > (raw.negotiation?.version || 0)) {
+          doc = { ...raw, negotiation: prev.negotiation, quotedRate: prev.quotedRate, totalAmount: prev.totalAmount };
+        }
+        if (prev && collection === 'project_requirements') {
+          if ((prev.approval?.history?.length || 0) > (raw.approval?.history?.length || 0)) {
+            doc = { ...doc, approval: prev.approval, status: prev.status, selectedVendorId: prev.selectedVendorId };
+          }
+          if (prev.purchaseOrder && !raw.purchaseOrder) doc = { ...doc, purchaseOrder: prev.purchaseOrder, status: prev.status, selectedVendorId: prev.selectedVendorId };
+        }
         const createdAt = prev ? prev._createdAt : now;
         const replacement = createdAt ? { ...doc, _createdAt: createdAt } : doc;
         ops.push({ replaceOne: { filter: { [keyField]: key }, replacement, upsert: true } });
@@ -569,8 +604,20 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
               attachment: existing.attachment,
               declineReason: existing.declineReason,
               submittedAt: existing.submittedAt,
+              negotiation: existing.negotiation
+                ? {
+                    status: existing.negotiation.status,
+                    originalRate: existing.negotiation.originalRate,
+                    targetRate: existing.negotiation.targetRate,
+                    agreedRate: existing.negotiation.agreedRate,
+                    rounds: (existing.negotiation.rounds || []).map((r: any) => ({ by: r.by, action: r.action, rate: r.rate, note: r.note, at: r.at })),
+                  }
+                : undefined,
             }
           : null,
+        // A counter-offer can be answered after the quote deadline, until the order is sent for approval / awarded
+        canRespondToOffer:
+          existing?.negotiation?.status === 'Offered' && !['Pending Approval', ...CLOSED_PR_STATUSES].includes(pr.status),
         gstRateOptions: GST_RATES,
         isClosed: Boolean(reason),
         closedReason: reason,
@@ -804,7 +851,19 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       }
 
       const submittedAt = formatTimestamp();
+      // A revised quotation keeps the negotiation history (the new rate is the vendor's latest offer)
+      const previous: any = await db.collection('vendor_quotations').findOne({ prId: pr.id, vendorId: vendor.id }, { projection: { _id: 0, negotiation: 1 } });
+      const negotiation = previous?.negotiation
+        ? {
+            ...previous.negotiation,
+            status: 'Countered',
+            rounds: [...(previous.negotiation.rounds || []), { by: 'vendor', action: 'revise', rate: quotedRate, byName: vendor.name, at: new Date().toISOString() }],
+            version: (previous.negotiation.version || 0) + 1,
+            updatedAt: new Date().toISOString(),
+          }
+        : undefined;
       const quote = {
+        ...(negotiation ? { negotiation } : {}),
         id: `vq-${pr.id}-${vendor.id}`,
         prId: pr.id,
         token: pr.token,
@@ -909,6 +968,167 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       return res.json({ success: true, declinedAt: submittedAt });
     } catch (err) {
       return sendError(res, err, 'Unable to record your response right now. Please try again.');
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Price negotiation: buyer counter-offer -> vendor accepts / counters */
+  /* ------------------------------------------------------------------ */
+
+  const MAX_BUYER_OFFERS = 3;
+  const NEGOTIABLE_PR = ['Enquiry Sent', 'Quotes Received', 'Under Comparison', 'Shortlisted', 'Draft'];
+  /** Public address of the app for links in emails (configured URL, else the address the request came in on) */
+  const appBaseUrl = (req: express.Request) => PUBLIC_APP_URL || `${req.protocol}://${req.get('host')}`;
+  const quoteTotal = (q: any, rate: number) =>
+    round2(rate * (Number(q.quantity) || 0) * (1 + (Number(q.gstRate) || 0) / 100) + (Number(q.freightCharges) || 0) + (Number(q.loadingCharges) || 0));
+
+  // Buyer sends a counter-offer (target rate) to a vendor; the vendor answers through their quote link
+  app.post('/api/negotiations/offer', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const prId = String(body.prId || '');
+      const vendorId = String(body.vendorId || '');
+      const targetRate = round2(Number(body.targetRate));
+      const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+      const byName = typeof body.byName === 'string' ? body.byName.slice(0, 100) : 'Purchase team';
+      const db = await getMongoDb();
+      const pr: any = await db.collection('project_requirements').findOne({ id: prId }, { projection: { _id: 0 } });
+      if (!pr) throw new HttpError(404, 'This requirement was not found. Please refresh the page.');
+      if (!NEGOTIABLE_PR.includes(pr.status)) throw new HttpError(409, 'Negotiation is closed for this requirement (it is awaiting approval or already awarded).');
+      const quotes = db.collection('vendor_quotations');
+      const quote: any = await quotes.findOne({ prId, vendorId }, { projection: { _id: 0 } });
+      if (!quote || quote.status === 'Declined' || !(quote.quotedRate > 0)) throw new HttpError(404, 'No quotation from this vendor to negotiate.');
+      const neg = quote.negotiation;
+      if (neg?.status === 'Offered') throw new HttpError(409, `An offer of Rs. ${formatINR(neg.targetRate)} is already waiting for ${quote.vendorName}'s reply.`);
+      if ((neg?.buyerOffers || 0) >= MAX_BUYER_OFFERS) throw new HttpError(409, `The maximum of ${MAX_BUYER_OFFERS} counter-offers has been reached for this vendor.`);
+      if (!(targetRate > 0) || targetRate >= quote.quotedRate) {
+        throw new HttpError(400, `The offer must be below the vendor's current rate of Rs. ${formatINR(quote.quotedRate)}.`);
+      }
+      if (targetRate < quote.quotedRate * 0.5) throw new HttpError(400, 'The offer is less than half the quoted rate. Please check the amount.');
+
+      const now = new Date().toISOString();
+      const negotiation = {
+        status: 'Offered',
+        originalRate: neg?.originalRate ?? quote.quotedRate,
+        originalTotal: neg?.originalTotal ?? quote.totalAmount,
+        targetRate,
+        ...(neg?.agreedRate ? { agreedRate: neg.agreedRate } : {}),
+        buyerOffers: (neg?.buyerOffers || 0) + 1,
+        rounds: [...(neg?.rounds || []), { by: 'buyer', action: 'offer', rate: targetRate, ...(note ? { note } : {}), byName, at: now }],
+        version: (neg?.version || 0) + 1,
+        updatedAt: now,
+      };
+      await quotes.updateOne({ id: quote.id }, { $set: { negotiation } });
+
+      // Email the vendor a link to answer (their existing secure quote link)
+      const token = pr.vendorQuoteTokens?.[vendorId];
+      const vendor: any = await db.collection('vendors').findOne({ id: vendorId }, { projection: { _id: 0, email: 1 } });
+      const vendorEmail = String(vendor?.email || quote.vendorEmail || '').trim();
+      let emailed = false;
+      if (token && isValidEmail(vendorEmail)) {
+        const link = `${appBaseUrl(req)}/vendor-quote?${new URLSearchParams({ pr: prId, v: vendorId, t: token }).toString()}`;
+        const sent = await sendAppEmail({
+          to: vendorEmail,
+          subject: `Revised price request: ${pr.materialName} (${prId})`,
+          label: 'Negotiation offer',
+          content: {
+            heading: 'Request for a revised price',
+            preheader: `We would like to proceed at Rs. ${formatINR(targetRate)} per ${quote.unit}.`,
+            greeting: `Dear ${quote.vendorName} Team,`,
+            paragraphs: [
+              `Thank you for your quotation for ${pr.materialName} (${prId}). We would like to place this order with you at a revised rate. Please accept the offer, send your best counter-rate, or keep your quoted rate using the button below.`,
+            ],
+            details: [
+              { label: 'Material', value: pr.materialName },
+              { label: 'Quantity', value: `${quote.quantity} ${quote.unit}` },
+              { label: 'Your quoted rate', value: `Rs. ${formatINR(quote.quotedRate)} per ${quote.unit} (excl. GST)` },
+              { label: 'Our offer', value: `Rs. ${formatINR(targetRate)} per ${quote.unit} (excl. GST)` },
+              ...(note ? [{ label: 'Message', value: note }] : []),
+            ],
+            cta: { label: 'Respond to Offer', url: link, note: 'This link is unique to your company. Please do not forward this email.' },
+            closing: ['Regards,', `Procurement Team, ${COMPANY.name}`],
+          },
+        });
+        emailed = sent.ok;
+      }
+      await notify(db, {
+        id: `negotiation-${quote.id}-${negotiation.version}`,
+        type: 'negotiation-offer',
+        title: `Counter-offer sent: ${quote.vendorName}`,
+        message: `${byName} offered Rs. ${formatINR(targetRate)}/${quote.unit} for ${pr.materialName} (${prId}) against the quoted Rs. ${formatINR(quote.quotedRate)}.${emailed ? '' : ' The vendor could not be emailed - please share the offer with them.'}`,
+        severity: emailed ? 'info' : 'warning',
+        projectId: pr.projectId,
+        link: { view: 'rfqs', prId },
+      });
+      console.log(`[Negotiation] ${prId}: offered Rs. ${targetRate} to ${quote.vendorName} (quoted ${quote.quotedRate}, offer ${negotiation.buyerOffers}/${MAX_BUYER_OFFERS}, emailed: ${emailed})`);
+      return res.json({ success: true, quote: { ...quote, negotiation }, emailed });
+    } catch (err) {
+      return sendError(res, err, 'Unable to send the counter-offer.');
+    }
+  });
+
+  // Vendor answers the buyer's counter-offer: accept the offered rate, counter with a new rate, or keep the quoted rate
+  app.post('/api/vendor-quote/negotiation', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const { db, pr, vendor } = await resolveVendorInvite(body.pr, body.v, body.t);
+      if (!NEGOTIABLE_PR.includes(pr.status)) throw new HttpError(409, 'This enquiry is no longer open for negotiation.');
+      const quotes = db.collection('vendor_quotations');
+      const quote: any = await quotes.findOne({ prId: pr.id, vendorId: vendor.id }, { projection: { _id: 0 } });
+      const neg = quote?.negotiation;
+      if (!neg || neg.status !== 'Offered') throw new HttpError(409, 'There is no offer waiting for your reply.');
+      const action = String(body.action || '');
+      const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+      const now = new Date().toISOString();
+
+      let rate = quote.quotedRate;
+      let status: string;
+      if (action === 'accept') {
+        rate = neg.targetRate;
+        status = 'Accepted';
+      } else if (action === 'counter') {
+        rate = round2(Number(body.rate));
+        if (!(rate > neg.targetRate) || !(rate < quote.quotedRate)) {
+          throw new HttpError(400, `Your counter-rate must be between Rs. ${formatINR(neg.targetRate)} (our offer) and Rs. ${formatINR(quote.quotedRate)} (your current rate).`);
+        }
+        status = 'Countered';
+      } else if (action === 'reject') {
+        status = 'Rejected';
+      } else {
+        throw new HttpError(400, 'Please choose to accept, counter or keep your quoted rate.');
+      }
+
+      const negotiation = {
+        ...neg,
+        status,
+        ...(status === 'Accepted' ? { agreedRate: rate } : {}),
+        rounds: [...(neg.rounds || []), { by: 'vendor', action, rate, ...(note ? { note } : {}), byName: vendor.name, at: now }],
+        version: (neg.version || 0) + 1,
+        updatedAt: now,
+      };
+      const totalAmount = quoteTotal(quote, rate);
+      await quotes.updateOne({ id: quote.id }, { $set: { negotiation, quotedRate: rate, totalAmount } });
+
+      const saving = round2((neg.originalRate - rate) * (Number(quote.quantity) || 0));
+      await notify(db, {
+        id: `negotiation-${quote.id}-${negotiation.version}`,
+        type: 'negotiation-response',
+        title:
+          status === 'Accepted' ? `Offer accepted: ${vendor.name}` : status === 'Countered' ? `Counter-offer from ${vendor.name}` : `Offer declined: ${vendor.name}`,
+        message:
+          status === 'Accepted'
+            ? `${vendor.name} accepted Rs. ${formatINR(rate)}/${pr.unit} for ${pr.materialName} (${pr.id}). Saving Rs. ${formatINR(saving)} on the quoted price.`
+            : status === 'Countered'
+              ? `${vendor.name} countered at Rs. ${formatINR(rate)}/${pr.unit} for ${pr.materialName} (${pr.id}) against our offer of Rs. ${formatINR(neg.targetRate)}.`
+              : `${vendor.name} kept the quoted rate of Rs. ${formatINR(rate)}/${pr.unit} for ${pr.materialName} (${pr.id}).${note ? ` "${note.slice(0, 120)}"` : ''}`,
+        severity: status === 'Rejected' ? 'warning' : 'success',
+        projectId: pr.projectId,
+        link: { view: 'rfqs', prId: pr.id },
+      });
+      console.log(`[Negotiation] ${pr.id}: ${vendor.name} ${action} -> Rs. ${rate}`);
+      return res.json({ success: true, status, rate, totalAmount });
+    } catch (err) {
+      return sendError(res, err, 'Unable to record your reply right now. Please try again.');
     }
   });
 
@@ -1053,38 +1273,48 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     };
   }
 
-  // Award a PR: generate the purchase order, save it and email it to the vendor (one PO per PR)
-  app.post('/api/purchase-orders/issue', async (req, res) => {
-    try {
-      const body = req.body || {};
-      const prId = String(body.prId || '');
-      const vendorId = String(body.vendorId || '');
-      if (!prId || !vendorId) throw new HttpError(400, 'prId and vendorId are required.');
-      const db = await getMongoDb();
-      const pos = db.collection(PURCHASE_ORDERS);
+  /**
+   * Generates the purchase order for an approved award, saves it and emails it to the vendor (one PO per PR).
+   * Throws HttpError when the award has not been approved.
+   */
+  async function issuePurchaseOrder(
+    db: Db,
+    opts: { prId: string; vendorId: string; awardedBy?: string; bodyPr?: any; bodyQuote?: any }
+  ): Promise<{ purchaseOrder: any; alreadyIssued?: boolean; emailError?: string }> {
+    const { prId, vendorId } = opts;
+    const pos = db.collection(PURCHASE_ORDERS);
 
-      const existing: any = await pos.findOne({ prId, status: 'Issued' }, { projection: { pdf: 0 } });
-      if (existing) {
-        if (existing.vendorId !== vendorId) {
-          throw new HttpError(409, `${prId} already has purchase order ${existing.poNumber} issued to ${existing.vendorName}.`);
-        }
-        return res.json({ success: true, alreadyIssued: true, purchaseOrder: poRef(existing) });
+    const existing: any = await pos.findOne({ prId, status: 'Issued' }, { projection: { pdf: 0 } });
+    if (existing) {
+      if (existing.vendorId !== vendorId) {
+        throw new HttpError(409, `${prId} already has purchase order ${existing.poNumber} issued to ${existing.vendorName}.`);
       }
+      return { alreadyIssued: true, purchaseOrder: poRef(existing) };
+    }
 
-      // The database is authoritative; a quote/PR entered moments ago may not be synced yet, so fall back to the request
-      const pr: any =
-        (await db.collection('project_requirements').findOne({ id: prId }, { projection: { _id: 0 } })) ||
-        (body.pr?.id === prId ? body.pr : null);
-      const quote: any =
-        (await db.collection('vendor_quotations').findOne({ prId, vendorId, status: { $ne: 'Declined' } }, { projection: { _id: 0 } })) ||
-        (body.quote?.prId === prId && body.quote?.vendorId === vendorId && body.quote?.status !== 'Declined' ? body.quote : null);
-      if (!pr) throw new HttpError(404, `Requirement ${prId} was not found.`);
-      if (!quote) throw new HttpError(404, `No quotation from this vendor was found for ${prId}.`);
-      const vendor: any = await db.collection('vendors').findOne({ id: vendorId }, { projection: { _id: 0 } });
+    // The database is authoritative; a quote/PR entered moments ago may not be synced yet, so fall back to the request
+    const pr: any =
+      (await db.collection('project_requirements').findOne({ id: prId }, { projection: { _id: 0 } })) ||
+      (opts.bodyPr?.id === prId ? opts.bodyPr : null);
+    const quote: any =
+      (await db.collection('vendor_quotations').findOne({ prId, vendorId, status: { $ne: 'Declined' } }, { projection: { _id: 0 } })) ||
+      (opts.bodyQuote?.prId === prId && opts.bodyQuote?.vendorId === vendorId && opts.bodyQuote?.status !== 'Declined' ? opts.bodyQuote : null);
+    if (!pr) throw new HttpError(404, `Requirement ${prId} was not found.`);
+    if (!quote) throw new HttpError(404, `No quotation from this vendor was found for ${prId}.`);
+    // Approval is required (orders awarded before the approval step existed keep working)
+    const approved = pr.approval?.status === 'Approved' && pr.approval.vendorId === vendorId;
+    const legacyAward = !pr.approval && pr.status === 'Awarded';
+    if (!approved && !legacyAward) {
+      throw new HttpError(403, 'This order must be approved by the approver before a purchase order can be issued.');
+    }
+    const vendor: any = await db.collection('vendors').findOne({ id: vendorId }, { projection: { _id: 0 } });
+    const awardedBy = opts.awardedBy;
 
-      const issuedAt = new Date();
-      const poNumber = await nextPoNumber(db);
-      const data = buildPurchaseOrderData(poNumber, issuedAt, pr, quote, vendor);
+    const issuedAt = new Date();
+    const poNumber = await nextPoNumber(db);
+    const data = buildPurchaseOrderData(poNumber, issuedAt, pr, quote, vendor);
+    const deliveryByIso = quote.promisedDeliveryDate || localIso(new Date(issuedAt.getTime() + (Number(quote.deliveryDays) || 0) * 86400000), APP_TIMEZONE);
+    const savingsBasis = await computeSavingsBasis(db, pr, quote).catch(() => undefined);
       const pdf = await renderPurchaseOrderPdf(data);
       const vendorEmail = String(vendor?.email || quote.vendorEmail || '').trim();
 
@@ -1111,15 +1341,19 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         loadingCharges: Number(quote.loadingCharges) || 0,
         vendorGstin: (vendor?.gstin || quote.vendorGstin || '').toUpperCase() || undefined,
         deliveryBy: data.deliveryBy,
+        deliveryByIso,
         paymentTerms: data.paymentTerms,
         creditDays: parseCreditDays(quote.paymentTerms || ''),
         receivedQty: 0,
+        rejectedQty: 0,
         invoicedAmount: 0,
         receipts: [],
         deliveryStatus: 'Pending',
         status: 'Issued',
         issuedAt,
-        issuedBy: typeof body.awardedBy === 'string' ? body.awardedBy.slice(0, 100) : undefined,
+        issuedBy: typeof awardedBy === 'string' ? awardedBy.slice(0, 100) : undefined,
+        ...(pr.approval?.status === 'Approved' ? { approvedBy: pr.approval.decidedBy, approvedAt: pr.approval.decidedAt } : {}),
+        ...(savingsBasis ? { savingsBasis } : {}),
         // 'sending' while the email is in flight; becomes 'sent' / 'failed' (or stays 'no-email')
         emailStatus: vendorEmail && isValidEmail(vendorEmail) ? 'sending' : 'no-email',
         data,
@@ -1131,7 +1365,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         if (e?.code === 11000) {
           // Concurrent award of the same PR: return the PO that won
           const winner: any = await pos.findOne({ prId, status: 'Issued' }, { projection: { pdf: 0 } });
-          if (winner) return res.json({ success: true, alreadyIssued: true, purchaseOrder: poRef(winner) });
+          if (winner) return { alreadyIssued: true, purchaseOrder: poRef(winner) };
         }
         throw e;
       }
@@ -1209,9 +1443,200 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         link: { view: 'pos', poNumber },
       });
       console.log(`[PO] ${poNumber} issued for ${prId} to ${quote.vendorName}, Rs. ${data.grandTotal} (email: ${poDoc.emailStatus})`);
-      return res.json({ success: true, purchaseOrder: ref, ...(emailError ? { emailError } : {}) });
+      return { purchaseOrder: ref, ...(emailError ? { emailError } : {}) };
+  }
+
+  // Issue the PO for an approved award (also used by "Retry PO" when the automatic PO failed)
+  app.post('/api/purchase-orders/issue', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const prId = String(body.prId || '');
+      const vendorId = String(body.vendorId || '');
+      if (!prId || !vendorId) throw new HttpError(400, 'Please choose the requirement and vendor.');
+      const db = await getMongoDb();
+      const result = await issuePurchaseOrder(db, { prId, vendorId, awardedBy: body.awardedBy, bodyPr: body.pr, bodyQuote: body.quote });
+      return res.json({ success: true, ...result });
     } catch (err) {
       return sendError(res, err, 'Unable to generate the purchase order.');
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Approval of the selected vendor before the PO is issued             */
+  /* ------------------------------------------------------------------ */
+
+  const approverEmails = async (db: Db): Promise<string[]> => {
+    const users = await db.collection('users').find({ role: 'approver' }, { projection: { _id: 0, email: 1 } }).toArray();
+    const extra = String(process.env.APPROVER_EMAIL || '').split(',');
+    return [...new Set([...users.map((u: any) => String(u.email || '').trim()), ...extra.map((s) => s.trim())])].filter((e) => isValidEmail(e));
+  };
+
+  // Purchase team sends the selected vendor for approval
+  app.post('/api/approvals/request', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const prId = String(body.prId || '');
+      const vendorId = String(body.vendorId || '');
+      const requestedBy = typeof body.requestedBy === 'string' ? body.requestedBy.slice(0, 100) : 'Purchase team';
+      const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+      const db = await getMongoDb();
+      const prs = db.collection('project_requirements');
+      let pr: any = await prs.findOne({ id: prId }, { projection: { _id: 0 } });
+      // A requirement created moments ago may not be saved yet
+      if (!pr && body.pr?.id === prId) {
+        const { _id, _createdAt, ...doc } = body.pr;
+        await prs.updateOne({ id: prId }, { $setOnInsert: { ...doc, _createdAt: new Date() } }, { upsert: true });
+        pr = doc;
+      }
+      if (!pr) throw new HttpError(404, 'This requirement was not found. Please refresh the page.');
+      if (pr.status === 'Pending Approval') throw new HttpError(409, `${prId} is already waiting for approval.`);
+      if (['Awarded', 'Closed'].includes(pr.status)) throw new HttpError(409, `${prId} has already been awarded.`);
+      const quote: any = await db.collection('vendor_quotations').findOne({ prId, vendorId, status: { $ne: 'Declined' } }, { projection: { _id: 0 } });
+      if (!quote) throw new HttpError(404, 'No quotation from this vendor was found. Please refresh the page.');
+      if (quote.negotiation?.status === 'Offered') {
+        throw new HttpError(409, `A counter-offer to ${quote.vendorName} is still waiting for their reply. Wait for the reply before sending for approval.`);
+      }
+
+      const now = new Date().toISOString();
+      const approval = {
+        status: 'Pending',
+        vendorId,
+        vendorName: quote.vendorName,
+        quoteId: quote.id,
+        amount: quote.totalAmount,
+        unitRate: quote.quotedRate,
+        requestedBy,
+        requestedAt: now,
+        ...(note ? { note } : {}),
+        history: [
+          ...(pr.approval?.history || []),
+          { action: 'requested', by: requestedBy, at: now, vendorName: quote.vendorName, amount: quote.totalAmount, ...(note ? { comment: note } : {}) },
+        ],
+      };
+      await prs.updateOne({ id: prId }, { $set: { status: 'Pending Approval', approval } });
+      await notify(db, {
+        id: `approval-req-${prId}-${approval.history.length}`,
+        type: 'approval-requested',
+        title: `Approval needed: ${pr.materialName}`,
+        message: `${requestedBy} selected ${quote.vendorName} for ${prId} at Rs. ${formatINR(quote.totalAmount)} (Rs. ${formatINR(quote.quotedRate)}/${quote.unit}).`,
+        severity: 'warning',
+        projectId: pr.projectId,
+        link: { view: 'approvals', prId },
+      });
+
+      let emailed = 0;
+      for (const to of await approverEmails(db)) {
+        const sent = await sendAppEmail({
+          to,
+          subject: `Approval needed: ${pr.materialName} - ${quote.vendorName} (Rs. ${formatINR(quote.totalAmount)})`,
+          label: 'Approval request',
+          content: {
+            heading: 'Purchase approval needed',
+            preheader: `${quote.vendorName} selected for ${pr.materialName} at Rs. ${formatINR(quote.totalAmount)}.`,
+            greeting: 'Dear Approver,',
+            paragraphs: [`${requestedBy} has selected a vendor for the requirement below. The purchase order will be issued once you approve it.`],
+            details: [
+              { label: 'Requirement', value: `${prId} - ${pr.materialName}` },
+              { label: 'Project', value: pr.projectName },
+              { label: 'Quantity', value: `${quote.quantity} ${quote.unit}` },
+              { label: 'Selected vendor', value: quote.vendorName },
+              { label: 'Unit rate', value: `Rs. ${formatINR(quote.quotedRate)} per ${quote.unit} (excl. GST)` },
+              { label: 'Total amount', value: `Rs. ${formatINR(quote.totalAmount)} (incl. GST and charges)` },
+              ...(quote.negotiation?.originalRate && quote.negotiation.originalRate > quote.quotedRate
+                ? [{ label: 'Negotiated from', value: `Rs. ${formatINR(quote.negotiation.originalRate)} per ${quote.unit}` }]
+                : []),
+              ...(note ? [{ label: 'Reason', value: note }] : []),
+            ],
+            cta: { label: 'Review in PRAVAH', url: `${appBaseUrl(req)}/` },
+            closing: ['Regards,', `Procurement System, ${COMPANY.name}`],
+          },
+        });
+        if (sent.ok) emailed++;
+      }
+      const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
+      console.log(`[Approval] ${prId}: ${quote.vendorName} sent for approval by ${requestedBy} (${emailed} approver email(s))`);
+      return res.json({ success: true, pr: updated });
+    } catch (err) {
+      return sendError(res, err, 'Unable to send this order for approval.');
+    }
+  });
+
+  // Approver approves (PO issued and emailed straight away) or rejects (back to comparison) the selected vendor
+  app.post('/api/approvals/decide', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const prId = String(body.prId || '');
+      const decision = String(body.decision || '');
+      const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
+      const decidedBy = typeof body.decidedBy === 'string' ? body.decidedBy.slice(0, 100) : 'Approver';
+      if (!['approve', 'reject'].includes(decision)) throw new HttpError(400, 'Please choose Approve or Reject.');
+      if (decision === 'reject' && !comment) throw new HttpError(400, 'Please give a reason for rejecting.');
+      const db = await getMongoDb();
+      const prs = db.collection('project_requirements');
+      const pr: any = await prs.findOne({ id: prId }, { projection: { _id: 0 } });
+      if (!pr) throw new HttpError(404, 'This requirement was not found. Please refresh the page.');
+      if (pr.status !== 'Pending Approval' || pr.approval?.status !== 'Pending') throw new HttpError(409, 'This order is not waiting for approval (it may already have been decided).');
+
+      const now = new Date().toISOString();
+      const approval = {
+        ...pr.approval,
+        status: decision === 'approve' ? 'Approved' : 'Rejected',
+        decidedBy,
+        decidedAt: now,
+        ...(comment ? { comment } : {}),
+        history: [
+          ...(pr.approval.history || []),
+          { action: decision === 'approve' ? 'approved' : 'rejected', by: decidedBy, at: now, vendorName: pr.approval.vendorName, amount: pr.approval.amount, ...(comment ? { comment } : {}) },
+        ],
+      };
+      // Atomic: only one decision can win
+      const claim = await prs.updateOne(
+        { id: prId, status: 'Pending Approval', 'approval.status': 'Pending' },
+        {
+          $set:
+            decision === 'approve'
+              ? { approval, status: 'Awarded', selectedVendorId: pr.approval.vendorId }
+              : { approval, status: 'Under Comparison' },
+        }
+      );
+      if (claim.modifiedCount !== 1) throw new HttpError(409, 'This order was decided by someone else a moment ago. Please refresh.');
+
+      let purchaseOrder: any;
+      let poError: string | undefined;
+      if (decision === 'approve') {
+        await db.collection('vendor_quotations').updateMany({ prId, vendorId: pr.approval.vendorId }, { $set: { status: 'Awarded' } });
+        await notify(db, {
+          id: `approval-ok-${prId}-${approval.history.length}`,
+          type: 'approval-approved',
+          title: `Approved: ${pr.materialName}`,
+          message: `${decidedBy} approved ${pr.approval.vendorName} for ${prId} (Rs. ${formatINR(pr.approval.amount)}).${comment ? ` "${comment.slice(0, 120)}"` : ''}`,
+          severity: 'success',
+          projectId: pr.projectId,
+          link: { view: 'pos' },
+        });
+        try {
+          const result = await issuePurchaseOrder(db, { prId, vendorId: pr.approval.vendorId, awardedBy: pr.approval.requestedBy });
+          purchaseOrder = result.purchaseOrder;
+        } catch (e: any) {
+          poError = e instanceof HttpError ? e.message : 'The purchase order could not be generated. Use "Retry PO" under Purchase Orders.';
+          console.error(`[Approval] ${prId}: approved but PO failed:`, e?.message || e);
+        }
+      } else {
+        await notify(db, {
+          id: `approval-no-${prId}-${approval.history.length}`,
+          type: 'approval-rejected',
+          title: `Not approved: ${pr.materialName}`,
+          message: `${decidedBy} rejected ${pr.approval.vendorName} for ${prId}: "${comment.slice(0, 160)}". The RFQ is back under comparison.`,
+          severity: 'danger',
+          projectId: pr.projectId,
+          link: { view: 'rfqs', prId },
+        });
+      }
+      const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
+      console.log(`[Approval] ${prId}: ${decision}d by ${decidedBy}${purchaseOrder ? `, ${purchaseOrder.poNumber} issued` : ''}`);
+      return res.json({ success: true, pr: updated, ...(purchaseOrder ? { purchaseOrder } : {}), ...(poError ? { poError } : {}) });
+    } catch (err) {
+      return sendError(res, err, 'Unable to record this decision.');
     }
   });
 
@@ -1247,17 +1672,42 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
 
       const ordered = Number(po.orderedQty) || 0;
       const remaining = round2(ordered - (Number(po.receivedQty) || 0));
-      const qty = Number(body.receivedQty);
-      if (!Number.isFinite(qty) || qty <= 0) throw new HttpError(400, 'Please enter the quantity received.');
+
+      // Material verification (GRN): delivered = accepted + rejected; only the accepted quantity is stocked and invoiced
+      const delivered = Number(body.receivedQty);
+      if (!Number.isFinite(delivered) || delivered <= 0) throw new HttpError(400, 'Please enter the quantity delivered.');
+      const qty = body.acceptedQty === undefined || body.acceptedQty === '' ? delivered : Number(body.acceptedQty);
+      if (!Number.isFinite(qty) || qty < 0 || qty > delivered + 1e-6) throw new HttpError(400, 'Accepted quantity must be between 0 and the quantity delivered.');
       if (qty > remaining + 1e-6) throw new HttpError(409, `Only ${remaining} ${po.unit} is pending on ${poNumber}.`);
+      const rejected = round2(delivered - qty);
+      const quality = ['Good', 'Acceptable', 'Poor'].includes(body.quality) ? body.quality : 'Good';
+      const rejectionReason = typeof body.rejectionReason === 'string' ? body.rejectionReason.trim().slice(0, 300) : '';
+      if (rejected > 0 && !rejectionReason) throw new HttpError(400, 'Please give the reason for rejecting material.');
+      const checks = {
+        specificationMatches: Boolean(body.checks?.specificationMatches),
+        quantityVerified: Boolean(body.checks?.quantityVerified),
+        noDamage: Boolean(body.checks?.noDamage),
+        documentsReceived: Boolean(body.checks?.documentsReceived),
+      };
+      if (!checks.quantityVerified) throw new HttpError(400, 'Please confirm the delivered quantity was counted / weighed.');
+      const inspectedBy = typeof body.inspectedBy === 'string' && body.inspectedBy.trim() ? body.inspectedBy.trim().slice(0, 100) : String(body.recordedBy || '').slice(0, 100);
+
+      // An invoice is needed only when material is accepted
       const invoiceNumber = typeof body.invoiceNumber === 'string' ? body.invoiceNumber.trim() : '';
-      if (!invoiceNumber || invoiceNumber.length > 60) throw new HttpError(400, 'Please enter the vendor invoice number.');
-      if ((po.receipts || []).some((r: any) => r.invoiceNumber.toLowerCase() === invoiceNumber.toLowerCase())) {
+      if (qty > 0 && (!invoiceNumber || invoiceNumber.length > 60)) throw new HttpError(400, 'Please enter the vendor invoice number.');
+      if (invoiceNumber && (po.receipts || []).some((r: any) => String(r.invoiceNumber || '').toLowerCase() === invoiceNumber.toLowerCase())) {
         throw new HttpError(409, `Invoice ${invoiceNumber} is already recorded against ${poNumber}.`);
       }
       const isDate = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
-      if (!isDate(body.invoiceDate)) throw new HttpError(400, 'Please enter the invoice date.');
+      if (qty > 0 && !isDate(body.invoiceDate)) throw new HttpError(400, 'Please enter the invoice date.');
       if (!isDate(body.receivedOn)) throw new HttpError(400, 'Please enter the date the material was received.');
+      const dueIso = poDeliveryIso(po);
+      const onTime = dueIso ? body.receivedOn <= dueIso : undefined;
+      const grnNumber = await (async () => {
+        const year = new Date().toLocaleDateString('en-GB', { timeZone: APP_TIMEZONE, year: 'numeric' });
+        const c: any = await db.collection('counters').findOneAndUpdate({ _id: `grn-${year}` as any }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'after' });
+        return `GRN-${year}-${String(c?.seq ?? c?.value?.seq ?? 1).padStart(4, '0')}`;
+      })();
 
       // Invoice amount calculated from the PO terms
       const fraction = ordered > 0 ? qty / ordered : 0;
@@ -1267,11 +1717,11 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       const loadingShare = round2((Number(po.loadingCharges) || 0) * fraction);
       const computedTotal = round2(baseAmount + gstAmount + freightShare + loadingShare);
       const entered = Number(body.invoiceTotal);
-      const invoiceTotal = Number.isFinite(entered) && entered > 0 ? round2(entered) : computedTotal;
+      const invoiceTotal = qty <= 0 ? 0 : Number.isFinite(entered) && entered > 0 ? round2(entered) : computedTotal;
 
       // Optional scan / PDF of the vendor invoice
       let invoiceFile: any;
-      if (body.file?.data) {
+      if (body.file?.data && qty > 0) {
         const buf = Buffer.from(String(body.file.data), 'base64');
         if (buf.length > MAX_QUOTE_DOC_BYTES) throw new HttpError(413, 'Invoice file is too large (max 10 MB).');
         const kind = detectDocKind(buf, String(body.file.fileName || ''));
@@ -1288,21 +1738,30 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       // Payment due date from the PO payment terms (credit days counted from the invoice date)
       const paymentTerms = String(po.paymentTerms || po.data?.paymentTerms || '').trim();
       const creditDays = Number.isFinite(Number(po.creditDays)) && po.creditDays !== undefined ? Number(po.creditDays) : parseCreditDays(paymentTerms);
-      const dueDate = addDaysIso(body.invoiceDate, creditDays);
-      const lineItems = normaliseInvoice({ lineItems: body.lineItems }).lineItems;
+      const hasInvoice = qty > 0;
+      const dueDate = hasInvoice ? addDaysIso(body.invoiceDate, creditDays) : '';
+      const lineItems = hasInvoice ? normaliseInvoice({ lineItems: body.lineItems }).lineItems : [];
 
       const receipt = {
         id: `${poNumber}-R${(po.receipts || []).length + 1}`,
+        grnNumber,
         receivedQty: qty,
+        deliveredQty: delivered,
+        rejectedQty: rejected,
+        ...(rejectionReason ? { rejectionReason } : {}),
+        quality,
+        checks,
+        inspectedBy,
+        ...(onTime !== undefined ? { onTime } : {}),
         receivedOn: body.receivedOn,
-        invoiceNumber,
-        invoiceDate: body.invoiceDate,
+        invoiceNumber: hasInvoice ? invoiceNumber : '',
+        invoiceDate: hasInvoice ? body.invoiceDate : '',
         ...(lineItems.length ? { lineItems } : {}),
         paymentTerms: paymentTerms || 'Not specified',
         creditDays,
         dueDate,
-        reminderOn: addDaysIso(dueDate, -2),
-        paymentStatus: 'Unpaid',
+        reminderOn: hasInvoice ? addDaysIso(dueDate, -2) : '',
+        paymentStatus: hasInvoice ? 'Unpaid' : 'Not applicable',
         baseAmount,
         gstRate: Number(po.gstRate) || 0,
         gstAmount,
@@ -1319,14 +1778,23 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
 
       // Atomic: only succeeds if the quantity is still pending (guards against double submission)
       const updated: any = await pos.findOneAndUpdate(
-        { poNumber, status: 'Issued', receivedQty: { $lte: ordered - qty + 1e-6 }, 'receipts.invoiceNumber': { $ne: invoiceNumber } },
-        { $push: { receipts: receipt } as any, $inc: { receivedQty: qty, invoicedAmount: invoiceTotal } },
+        {
+          poNumber,
+          status: 'Issued',
+          receivedQty: { $lte: ordered - qty + 1e-6 },
+          'receipts.grnNumber': { $ne: grnNumber },
+          ...(invoiceNumber ? { 'receipts.invoiceNumber': { $ne: invoiceNumber } } : {}),
+        },
+        { $push: { receipts: receipt } as any, $inc: { receivedQty: qty, rejectedQty: rejected, invoicedAmount: invoiceTotal } },
         { returnDocument: 'after', projection: { pdf: 0, data: 0 } }
       );
       const doc = updated?.value !== undefined && updated?.poNumber === undefined ? updated.value : updated;
       if (!doc) throw new HttpError(409, 'This delivery could not be recorded (quantity or invoice already recorded). Please refresh.');
-      const deliveryStatus = doc.receivedQty >= ordered - 1e-6 ? 'Received' : 'Partially Received';
-      await pos.updateOne({ poNumber }, { $set: { deliveryStatus, receivedQty: round2(doc.receivedQty), invoicedAmount: round2(doc.invoicedAmount) } });
+      const deliveryStatus = doc.receivedQty >= ordered - 1e-6 ? 'Received' : doc.receivedQty > 0 ? 'Partially Received' : 'Pending';
+      await pos.updateOne(
+        { poNumber },
+        { $set: { deliveryStatus, receivedQty: round2(doc.receivedQty), rejectedQty: round2(doc.rejectedQty || 0), invoicedAmount: round2(doc.invoicedAmount) } }
+      );
       // A fully delivered order closes its requirement
       if (deliveryStatus === 'Received') {
         await db.collection('project_requirements').updateOne({ id: po.prId, status: 'Awarded' }, { $set: { status: 'Closed' } });
@@ -1336,15 +1804,57 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         id: `delivery-${receipt.id}`,
         type: 'delivery-recorded',
         title: `Delivery received: ${po.materialName}`,
-        message: `${qty} ${po.unit} received against ${poNumber} (invoice ${invoiceNumber}, Rs. ${formatINR(invoiceTotal)}). Payment due on ${fmtIso(dueDate)}.`,
-        severity: 'success',
+        message: hasInvoice
+          ? `${grnNumber}: ${qty} ${po.unit} accepted against ${poNumber}${rejected > 0 ? ` (${rejected} ${po.unit} rejected)` : ''}, quality ${quality}. Invoice ${invoiceNumber}, Rs. ${formatINR(invoiceTotal)}, due ${fmtIso(dueDate)}.`
+          : `${grnNumber}: all ${delivered} ${po.unit} delivered against ${poNumber} were rejected (${rejectionReason}).`,
+        severity: rejected > 0 ? 'warning' : 'success',
         projectId: po.projectId,
         link: { view: 'pos', poNumber },
       });
-      // A due date within 2 days gets its reminder straight away
-      runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e));
 
-      console.log(`[PO] ${poNumber}: received ${qty} ${po.unit}, invoice ${invoiceNumber} Rs. ${invoiceTotal} (${deliveryStatus}), due ${dueDate}`);
+      // Rejected material: tell the team and ask the vendor to replace it
+      if (rejected > 0) {
+        await notify(db, {
+          id: `rejected-${receipt.id}`,
+          type: 'material-rejected',
+          title: `Material rejected: ${po.materialName}`,
+          message: `${rejected} ${po.unit} from ${po.vendorName} rejected on ${grnNumber} (${poNumber}): ${rejectionReason}.`,
+          severity: 'danger',
+          projectId: po.projectId,
+          link: { view: 'pos', poNumber },
+        });
+        const vendorEmail = String(po.vendorEmail || '').trim();
+        if (isValidEmail(vendorEmail)) {
+          await sendAppEmail({
+            to: vendorEmail,
+            subject: `Material rejected: ${po.materialName} - ${poNumber}`,
+            label: 'Material rejection',
+            content: {
+              heading: 'Delivered material rejected',
+              preheader: `${rejected} ${po.unit} rejected on inspection.`,
+              greeting: `Dear ${po.vendorName} Team,`,
+              paragraphs: [
+                `Part of your delivery against purchase order ${poNumber} did not pass our inspection on ${fmtIso(body.receivedOn)}. Please arrange collection and replacement of the rejected quantity.`,
+              ],
+              details: [
+                { label: 'Purchase order', value: poNumber },
+                { label: 'GRN', value: grnNumber },
+                { label: 'Material', value: po.materialName },
+                { label: 'Delivered', value: `${delivered} ${po.unit}` },
+                { label: 'Accepted', value: `${qty} ${po.unit}` },
+                { label: 'Rejected', value: `${rejected} ${po.unit}` },
+                { label: 'Reason', value: rejectionReason },
+                { label: 'Still pending on PO', value: `${round2(ordered - (doc.receivedQty || 0))} ${po.unit}` },
+              ],
+              closing: ['Regards,', `Procurement Team, ${COMPANY.name}`],
+            },
+          }).catch(() => undefined);
+        }
+      }
+      // A due date within 2 days gets its reminder straight away
+      if (hasInvoice) runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e));
+
+      console.log(`[PO] ${poNumber}: ${grnNumber} delivered ${delivered}, accepted ${qty}, rejected ${rejected} ${po.unit} (${quality}), invoice ${invoiceNumber || '-'} Rs. ${invoiceTotal} (${deliveryStatus})`);
       const { data: _data, _id, ...publicDoc } = doc;
       return res.json({
         success: true,
@@ -1533,25 +2043,331 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     }
   }
 
-  // Check for due invoices shortly after start-up, then every hour (long-running server only)
-  if (scheduleJobs) {
-    const reminderEveryMs = Math.max(5, Number(process.env.REMINDER_INTERVAL_MINUTES) || 60) * 60000;
-    setTimeout(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), 15000).unref();
-    setInterval(() => runPaymentReminders().catch((e) => console.warn('[Payments] Reminder check failed:', e?.message || e)), reminderEveryMs).unref();
+  /* ---------------- Delivery follow-ups to vendors ---------------- */
+  // 2 days before the PO delivery date, on the day, then every 3 days while overdue (max 5 overdue alerts)
+
+  const DELIVERY_REMIND_DAYS_BEFORE = 2;
+  const OVERDUE_EVERY_DAYS = 3;
+  const MAX_OVERDUE_ALERTS = 5;
+  let deliveryRunning = false;
+
+  async function runDeliveryFollowUps(): Promise<void> {
+    if (deliveryRunning) return;
+    deliveryRunning = true;
+    try {
+      const db = await getMongoDb();
+      const col = db.collection(PURCHASE_ORDERS);
+      const today = todayIn(APP_TIMEZONE);
+      const list = await col
+        .find({ status: 'Issued', deliveryStatus: { $ne: 'Received' } }, { projection: { _id: 0, pdf: 0, data: 0 } })
+        .toArray();
+
+      for (const po of list as any[]) {
+        const due = poDeliveryIso(po);
+        if (!due) continue;
+        const daysLeft = Math.round((Date.parse(`${due}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400000);
+        const fu = po.deliveryReminder || {};
+        let stage: 'before' | 'due' | 'overdue' | null = null;
+        let claimFilter: any;
+        let claimUpdate: any;
+        if (daysLeft > 0 && daysLeft <= DELIVERY_REMIND_DAYS_BEFORE && !fu.beforeOn) {
+          stage = 'before';
+          claimFilter = { 'deliveryReminder.beforeOn': { $exists: false } };
+          claimUpdate = { $set: { 'deliveryReminder.beforeOn': today } };
+        } else if (daysLeft === 0 && !fu.dueOn) {
+          stage = 'due';
+          claimFilter = { 'deliveryReminder.dueOn': { $exists: false } };
+          claimUpdate = { $set: { 'deliveryReminder.dueOn': today } };
+        } else if (daysLeft < 0 && (fu.overdueCount || 0) < MAX_OVERDUE_ALERTS) {
+          const last = fu.lastOverdueOn;
+          const gap = last ? Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${last}T12:00:00Z`)) / 86400000) : Infinity;
+          if (gap >= OVERDUE_EVERY_DAYS) {
+            stage = 'overdue';
+            claimFilter = last ? { 'deliveryReminder.lastOverdueOn': last } : { 'deliveryReminder.lastOverdueOn': { $exists: false } };
+            claimUpdate = { $set: { 'deliveryReminder.lastOverdueOn': today }, $inc: { 'deliveryReminder.overdueCount': 1 } };
+          }
+        }
+        if (!stage) continue;
+        // Claimed atomically, so several server instances never send the same reminder twice
+        const claim = await col.updateOne({ poNumber: po.poNumber, ...claimFilter }, claimUpdate);
+        if (claim.modifiedCount !== 1) continue;
+
+        const pending = round2((po.orderedQty || 0) - (po.receivedQty || 0));
+        const overdueDays = -daysLeft;
+        const alertNo = (fu.overdueCount || 0) + 1;
+        const vendorEmail = String(po.vendorEmail || '').trim();
+        let emailed = false;
+        if (isValidEmail(vendorEmail)) {
+          const heading =
+            stage === 'before' ? `Delivery due on ${fmtIso(due)}` : stage === 'due' ? 'Delivery due today' : `Delivery overdue by ${overdueDays} day${overdueDays === 1 ? '' : 's'}`;
+          const sent = await sendAppEmail({
+            to: vendorEmail,
+            subject: `${stage === 'overdue' ? 'OVERDUE: ' : ''}${heading} - ${po.materialName} (${po.poNumber})`,
+            label: `Delivery ${stage}`,
+            content: {
+              heading,
+              preheader: `${pending} ${po.unit} of ${po.materialName} pending on ${po.poNumber}.`,
+              greeting: `Dear ${po.vendorName} Team,`,
+              paragraphs: [
+                stage === 'before'
+                  ? `This is a reminder that the material below is due for delivery on ${fmtIso(due)} as per purchase order ${po.poNumber}. Please confirm the dispatch date.`
+                  : stage === 'due'
+                    ? `The material below is due for delivery today as per purchase order ${po.poNumber}. Please confirm the vehicle and expected arrival time.`
+                    : `The material below was due on ${fmtIso(due)} as per purchase order ${po.poNumber} and has not been fully delivered. Please reply with the revised dispatch date at the earliest. As per the PO terms, late delivery may attract a deduction.`,
+              ],
+              details: [
+                { label: 'Purchase order', value: po.poNumber },
+                { label: 'Material', value: po.materialName },
+                { label: 'Ordered', value: `${po.orderedQty} ${po.unit}` },
+                { label: 'Delivered so far', value: `${round2(po.receivedQty || 0)} ${po.unit}` },
+                { label: 'Pending', value: `${pending} ${po.unit}` },
+                { label: 'Delivery due', value: fmtIso(due) },
+                { label: 'Deliver to', value: po.projectName },
+              ],
+              closing: ['Regards,', `Procurement Team, ${COMPANY.name}`],
+            },
+          });
+          emailed = sent.ok;
+        }
+        await col.updateOne(
+          { poNumber: po.poNumber },
+          { $push: { deliveryFollowUps: { type: stage, at: new Date().toISOString(), emailed } } as any }
+        );
+        await notify(db, {
+          id: stage === 'overdue' ? `delivery-overdue-${po.poNumber}-${alertNo}` : `delivery-${stage}-${po.poNumber}`,
+          type: stage === 'overdue' ? 'delivery-overdue' : 'delivery-due',
+          title:
+            stage === 'overdue'
+              ? `Delivery overdue ${overdueDays}d: ${po.materialName}`
+              : stage === 'due'
+                ? `Delivery due today: ${po.materialName}`
+                : `Delivery due ${fmtIso(due)}: ${po.materialName}`,
+          message: `${pending} ${po.unit} pending from ${po.vendorName} on ${po.poNumber}. ${
+            emailed ? 'Follow-up emailed to the vendor.' : vendorEmail ? 'The follow-up email could not be sent - please call the vendor.' : 'The vendor has no email - please call them.'
+          }`,
+          severity: stage === 'overdue' ? 'danger' : stage === 'due' ? 'warning' : 'info',
+          projectId: po.projectId,
+          link: { view: 'pos', poNumber: po.poNumber },
+        });
+        console.log(`[Delivery] ${po.poNumber}: ${stage} follow-up (due ${due}, ${pending} ${po.unit} pending, emailed: ${emailed})`);
+      }
+    } finally {
+      deliveryRunning = false;
+    }
   }
 
-  // Scheduled run for serverless hosting (Vercel Cron calls this; see vercel.json).
+  /* ---------------- Reports: JSON for the app, Excel download, email ---------------- */
+
+  const REPORT_EMAILS = (process.env.REPORT_EMAILS || TARGET_EMAIL)
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => isValidEmail(s));
+  const REPORT_TYPES = ['pending', 'monthly', 'savings', 'vendors'] as const;
+  type ReportType = (typeof REPORT_TYPES)[number];
+  const isMonth = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+  const isIsoDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
+
+  async function buildReport(db: Db, type: ReportType, params: any): Promise<{ report: any; performance?: any[] }> {
+    const today = todayIn(APP_TIMEZONE);
+    if (type === 'pending') return { report: await buildPendingReport(db, APP_TIMEZONE) };
+    if (type === 'monthly') return { report: await buildMonthlyReport(db, isMonth(params.month) ? params.month : today.slice(0, 7), APP_TIMEZONE) };
+    if (type === 'savings') {
+      const from = isIsoDate(params.from) ? params.from : `${today.slice(0, 4)}-01-01`;
+      const to = isIsoDate(params.to) ? params.to : today;
+      if (from > to) throw new HttpError(400, 'The start date must be before the end date.');
+      return { report: await buildSavingsReport(db, from, to, APP_TIMEZONE) };
+    }
+    const performance = await computeVendorPerformance(db, APP_TIMEZONE);
+    performance.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+    return { report: { type: 'vendors', title: 'Vendor Performance Report', period: today, generatedAt: new Date().toISOString(), vendors: performance }, performance };
+  }
+
+  const reportFileName = (report: any) =>
+    `${COMPANY.name.replace(/[^\w]+/g, '_')}_${String(report.title).replace(/\s+/g, '_')}_${String(report.month || report.from || report.period).replace(/[^\w-]+/g, '_')}.xlsx`;
+
+  /** Short summary lines for the report email */
+  function reportEmailDetails(report: any): { label: string; value: string }[] {
+    const s = report.summary || {};
+    const rs = (n: number) => `Rs. ${formatINR(n || 0)}`;
+    if (report.type === 'pending') {
+      return [
+        { label: 'Open RFQs', value: String(s.openRfqs) },
+        { label: 'Waiting for approval', value: String(s.awaitingApproval) },
+        { label: 'Negotiations in progress', value: String(s.negotiations) },
+        { label: 'POs awaiting delivery', value: `${s.posAwaitingDelivery} (${s.overdueDeliveries} overdue)` },
+        { label: 'Unpaid invoices', value: `${s.unpaidInvoices} - ${rs(s.unpaidAmount)}` },
+        { label: 'Overdue payments', value: `${s.overduePayments} - ${rs(s.overdueAmount)}` },
+      ];
+    }
+    if (report.type === 'monthly') {
+      return [
+        { label: 'Purchase orders', value: `${s.orders} - ${rs(s.value)}` },
+        { label: 'Previous month', value: `${rs(s.previousMonthValue)}${s.changePct !== null ? ` (${s.changePct > 0 ? '+' : ''}${s.changePct}%)` : ''}` },
+        { label: 'Vendors used', value: String(s.vendors) },
+        { label: 'Deliveries', value: `${s.deliveries} (${s.lateDeliveries} late, ${s.rejectedDeliveries} with rejections)` },
+        { label: 'Invoiced / paid', value: `${rs(s.invoiced)} / ${rs(s.paid)}` },
+        { label: 'Negotiation saving', value: rs(s.negotiationSaving) },
+      ];
+    }
+    if (report.type === 'savings') {
+      return [
+        { label: 'Period', value: report.period },
+        { label: 'Purchase orders', value: `${s.orders} - ${rs(s.spend)}` },
+        { label: 'Negotiation saving', value: `${rs(s.negotiationSaving)} (${s.negotiatedOrders} orders)` },
+        { label: 'Saving vs average quotation', value: `${rs(s.vsAverageSaving)} (${s.savingPct}%)` },
+        { label: 'Saving vs market rate', value: rs(s.vsMarketSaving) },
+        { label: 'Saving vs target rate', value: rs(s.vsTargetSaving) },
+      ];
+    }
+    const rated = (report.vendors || []).filter((v: any) => v.rating !== null);
+    return [
+      { label: 'Vendors rated', value: `${rated.length} of ${(report.vendors || []).length}` },
+      ...rated.slice(0, 5).map((v: any, i: number) => ({ label: `${i + 1}. ${v.vendorName}`, value: `${v.rating} / 5` })),
+    ];
+  }
+
+  async function emailReport(report: any, performance: any[] | undefined, recipients: string[]): Promise<string[]> {
+    const xlsx = await reportWorkbook(report, COMPANY.name, performance);
+    const sentTo: string[] = [];
+    for (const to of recipients) {
+      const sent = await sendAppEmail({
+        to,
+        subject: `${report.title} - ${report.period}`,
+        label: report.title,
+        attachments: [{ filename: reportFileName(report), content: xlsx }],
+        content: {
+          heading: report.title,
+          preheader: `${report.title} for ${report.period}. Full details in the attached Excel file.`,
+          greeting: 'Hello,',
+          paragraphs: [`Here is the ${report.title.toLowerCase()} for ${report.period}. The attached Excel file has the full details.`],
+          details: reportEmailDetails(report),
+          closing: ['Regards,', `Procurement System, ${COMPANY.name}`],
+        },
+      });
+      if (sent.ok) sentTo.push(to);
+    }
+    return sentTo;
+  }
+
+  /**
+   * Scheduled report emails: the pending purchase report every day (from 8 am), and on the 1st of the month
+   * the monthly purchase and savings reports for the previous month. Each is sent once (claimed in app_meta).
+   */
+  async function runScheduledReports(): Promise<void> {
+    if (!REPORT_EMAILS.length) return;
+    const db = await getMongoDb();
+    const meta = db.collection(META_COLLECTION);
+    const today = todayIn(APP_TIMEZONE);
+    const hour = Number(new Date().toLocaleString('en-GB', { timeZone: APP_TIMEZONE, hour: '2-digit', hour12: false }));
+    if (hour < 8) return;
+    const [y, m] = today.split('-').map(Number);
+    const prevMonth = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+    const prevLast = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10);
+    const jobs: { key: string; type: ReportType; params: any }[] = [{ key: `report-pending-${today}`, type: 'pending', params: {} }];
+    if (Number(today.slice(8, 10)) <= 3) {
+      jobs.push({ key: `report-monthly-${prevMonth}`, type: 'monthly', params: { month: prevMonth } });
+      jobs.push({ key: `report-savings-${prevMonth}`, type: 'savings', params: { from: `${prevMonth}-01`, to: prevLast } });
+    }
+    for (const job of jobs) {
+      try {
+        await meta.insertOne({ _id: job.key as any, startedAt: new Date() });
+      } catch (e: any) {
+        if (e?.code === 11000) continue; // already sent (or being sent by another instance)
+        throw e;
+      }
+      try {
+        const { report, performance } = await buildReport(db, job.type, job.params);
+        const sentTo = await emailReport(report, performance, REPORT_EMAILS);
+        if (!sentTo.length) throw new Error('no email delivered');
+        await meta.updateOne({ _id: job.key as any }, { $set: { sentAt: new Date(), sentTo } });
+        console.log(`[Reports] ${report.title} (${report.period}) emailed to ${sentTo.join(', ')}`);
+      } catch (e: any) {
+        await meta.deleteOne({ _id: job.key as any }); // retry on the next run
+        console.warn(`[Reports] ${job.key} not sent:`, e?.message || e);
+      }
+    }
+  }
+
+  /** Everything that runs on a schedule: payment reminders, delivery follow-ups, report emails */
+  async function runScheduledJobs(): Promise<void> {
+    const results = await Promise.allSettled([runPaymentReminders(), runDeliveryFollowUps(), runScheduledReports()]);
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') console.warn(`[Schedule] ${['Payment reminders', 'Delivery follow-ups', 'Report emails'][i]} failed:`, r.reason?.message || r.reason);
+    });
+  }
+
+  // Run shortly after start-up, then every hour (long-running server only)
+  if (scheduleJobs) {
+    const reminderEveryMs = Math.max(5, Number(process.env.REMINDER_INTERVAL_MINUTES) || 60) * 60000;
+    setTimeout(() => runScheduledJobs(), 15000).unref();
+    setInterval(() => runScheduledJobs(), reminderEveryMs).unref();
+  }
+
+  // Scheduled run for serverless hosting (Vercel Cron calls this daily; see vercel.json).
   // Vercel sends "Authorization: Bearer <CRON_SECRET>" when CRON_SECRET is set in the project.
-  app.get('/api/cron/payment-reminders', async (req, res) => {
+  app.get(['/api/cron/payment-reminders', '/api/cron/daily'], async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const auth = String(req.headers.authorization || '');
     const allowed = secret ? auth === `Bearer ${secret}` : String(req.headers['user-agent'] || '').startsWith('vercel-cron');
     if (!allowed) return res.status(401).json({ success: false, error: 'Unauthorized' });
     try {
-      await runPaymentReminders();
+      await runScheduledJobs();
       return res.json({ success: true });
     } catch (err) {
-      return sendError(res, err, 'Payment reminder check failed.');
+      return sendError(res, err, 'Scheduled jobs failed.');
+    }
+  });
+
+  // Automatic vendor rating (7 measured criteria)
+  app.get('/api/vendors/performance', async (_req, res) => {
+    try {
+      const db = await getMongoDb();
+      return res.json({ success: true, vendors: await computeVendorPerformance(db, APP_TIMEZONE) });
+    } catch (err) {
+      return sendError(res, err, 'Unable to calculate vendor ratings.');
+    }
+  });
+
+  // Reports: ?format=xlsx downloads the Excel file, otherwise JSON for the app
+  app.get('/api/reports/:type', async (req, res) => {
+    try {
+      const type = String(req.params.type) as ReportType;
+      if (!REPORT_TYPES.includes(type)) throw new HttpError(404, 'This report is not available.');
+      const db = await getMongoDb();
+      const { report, performance } = await buildReport(db, type, req.query);
+      if (req.query.format === 'xlsx') {
+        const buf = await reportWorkbook(report, COMPANY.name, performance);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${reportFileName(report)}"`);
+        return res.end(buf);
+      }
+      return res.json({ success: true, report });
+    } catch (err) {
+      return sendError(res, err, 'Unable to prepare this report.');
+    }
+  });
+
+  // Email a report now (to the given addresses, or the configured report recipients)
+  app.post('/api/reports/:type/email', async (req, res) => {
+    try {
+      const type = String(req.params.type) as ReportType;
+      if (!REPORT_TYPES.includes(type)) throw new HttpError(404, 'This report is not available.');
+      const body = req.body || {};
+      const requested = String(body.to || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const invalid = requested.filter((e) => !isValidEmail(e));
+      if (invalid.length) throw new HttpError(400, `Please check this email address: ${invalid[0]}`);
+      const recipients = requested.length ? requested.slice(0, 10) : REPORT_EMAILS;
+      if (!recipients.length) throw new HttpError(400, 'Please enter an email address to send the report to.');
+      const db = await getMongoDb();
+      const { report, performance } = await buildReport(db, type, body);
+      const sentTo = await emailReport(report, performance, recipients);
+      if (!sentTo.length) throw new HttpError(502, 'The report email could not be delivered. Please try again later.');
+      return res.json({ success: true, sentTo });
+    } catch (err) {
+      return sendError(res, err, 'Unable to email this report.');
     }
   });
 

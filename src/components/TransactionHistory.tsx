@@ -19,6 +19,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import MaterialVerificationPanel, { newVerificationDraft, verificationError, toVerification, VerificationDraft } from './MaterialVerificationPanel';
 
 export type TimeframeMode = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'all';
 
@@ -110,6 +111,7 @@ export default function TransactionHistory({
   // Form States
   const [formMaterialId, setFormMaterialId] = useState('');
   const [formType, setFormType] = useState<'addition' | 'consumption'>('consumption');
+  const [formVerification, setFormVerification] = useState<VerificationDraft>(() => newVerificationDraft());
   const [formQty, setFormQty] = useState<number | ''>('');
   const [formRate, setFormRate] = useState<number | ''>('');
   const [formTotalPrice, setFormTotalPrice] = useState<number | ''>('');
@@ -403,17 +405,36 @@ export default function TransactionHistory({
       return;
     }
 
+    // Material verification: only the accepted quantity is added to stock
+    const verification = formType === 'addition' ? toVerification(formVerification, qtyNum) : undefined;
+    if (formType === 'addition') {
+      const vError = verificationError(formVerification, qtyNum);
+      if (vError) {
+        alert(vError);
+        return;
+      }
+      if (!(verification!.acceptedQty > 0)) {
+        alert('All delivered material was rejected, so nothing is added to stock. Please return it to the vendor.');
+        return;
+      }
+    }
+    const stockQty = verification ? verification.acceptedQty : qtyNum;
+
     const rateVal = formType === 'addition' ? (Number(formRate) || selectedMat.unitCost) : undefined;
     const computedTotal = formType === 'addition'
-      ? (formTotalPrice !== '' && !isNaN(Number(formTotalPrice)) ? Number(formTotalPrice) : (rateVal! * qtyNum))
+      ? (formTotalPrice !== '' && !isNaN(Number(formTotalPrice)) && stockQty === qtyNum ? Number(formTotalPrice) : (rateVal! * stockQty))
       : undefined;
 
     onAddTransaction({
       projectId: selectedMat.projectId,
       materialId: formMaterialId,
       type: formType,
-      quantity: qtyNum,
-      notes: formNotes.trim(),
+      quantity: stockQty,
+      ...(verification ? { verification } : {}),
+      notes:
+        verification && verification.rejectedQty > 0
+          ? `${formNotes.trim()} (${verification.rejectedQty} ${selectedMat.unit} rejected: ${verification.rejectionReason})`
+          : formNotes.trim(),
       operator: formOperator.trim(),
       date: formDate,
       rate: rateVal,
@@ -435,6 +456,7 @@ export default function TransactionHistory({
     setFormInvoiceFileName('');
     setFormInvoiceUrl('');
     setFormDate(todayStr);
+    setFormVerification(newVerificationDraft());
     setIsLogOpen(false);
   };
 
@@ -1074,6 +1096,14 @@ export default function TransactionHistory({
                           </div>
                         </div>
                       </div>
+
+                      <MaterialVerificationPanel
+                        idPrefix="tx-verify"
+                        unit={materials.find((m) => m.id === formMaterialId)?.unit || 'units'}
+                        delivered={Number(formQty) || 0}
+                        value={formVerification}
+                        onChange={setFormVerification}
+                      />
                     </>
                   )}
 

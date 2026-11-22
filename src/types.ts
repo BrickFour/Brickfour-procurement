@@ -3,7 +3,8 @@ export interface User {
   name: string;
   email: string;
   password?: string;
-  role: 'admin' | 'site_manager';
+  /** admin = purchase team; site_manager = one project; approver = approves vendor awards before the PO is issued */
+  role: 'admin' | 'site_manager' | 'approver';
   phone?: string;
   title?: string; // e.g. "Lead Site Engineer", "Senior Project Manager"
   assignedProjectId?: string;
@@ -88,6 +89,29 @@ export interface InventoryTransaction {
   gstAmount?: number;
   baseAmount?: number;
   vendorGstin?: string;
+  /** Inspection done when the material was received (stock added = accepted quantity) */
+  verification?: MaterialVerification;
+}
+
+/** Quality grade given when material is inspected on receipt */
+export type QualityGrade = 'Good' | 'Acceptable' | 'Poor';
+
+/** Material verification / GRN inspection recorded when stock is received */
+export interface MaterialVerification {
+  grnNumber?: string; // assigned by the server for deliveries against a PO
+  receivedQty: number; // quantity delivered by the vendor
+  acceptedQty: number; // quantity accepted into stock
+  rejectedQty: number; // quantity rejected (returned to the vendor)
+  rejectionReason?: string;
+  quality: QualityGrade;
+  checks: {
+    specificationMatches: boolean; // matches the PO / requirement specification
+    quantityVerified: boolean; // counted / weighed
+    noDamage: boolean; // packaging and material undamaged
+    documentsReceived: boolean; // delivery challan / test certificate received
+  };
+  inspectedBy: string;
+  remarks?: string;
 }
 
 export interface QueryEmailLog {
@@ -257,7 +281,51 @@ export interface FutureRatePredictionResult {
   marketRateToday?: number;
 }
 
-export type PRStatus = 'Draft' | 'Enquiry Sent' | 'Quotes Received' | 'Under Comparison' | 'Shortlisted' | 'Awarded' | 'Closed';
+export type PRStatus = 'Draft' | 'Enquiry Sent' | 'Quotes Received' | 'Under Comparison' | 'Shortlisted' | 'Pending Approval' | 'Awarded' | 'Closed';
+
+/** Approval of the selected vendor by the approver (required before the PO is issued) */
+export interface PRApproval {
+  status: 'Pending' | 'Approved' | 'Rejected';
+  vendorId: string;
+  vendorName: string;
+  quoteId: string;
+  amount: number; // total price of the selected quotation (Rs.)
+  unitRate: number;
+  requestedBy: string;
+  requestedAt: string; // ISO
+  note?: string; // why this vendor was selected
+  decidedBy?: string;
+  decidedAt?: string; // ISO
+  comment?: string; // approver's comment (required on rejection)
+  history: { action: 'requested' | 'approved' | 'rejected'; by: string; at: string; vendorName: string; amount: number; comment?: string }[];
+}
+
+/** One step of a price negotiation on a quotation */
+export interface NegotiationRound {
+  by: 'buyer' | 'vendor';
+  action: 'offer' | 'accept' | 'counter' | 'reject' | 'revise';
+  rate: number; // Rs. per unit (excl. GST)
+  note?: string;
+  byName?: string;
+  at: string; // ISO
+}
+
+/**
+ * Negotiation on a vendor quotation.
+ * Offered = buyer's counter-offer is waiting for the vendor; Countered = vendor replied with a new rate;
+ * Accepted = vendor accepted the buyer's rate; Rejected = vendor kept the quoted rate.
+ */
+export interface QuoteNegotiation {
+  status: 'Offered' | 'Countered' | 'Accepted' | 'Rejected';
+  originalRate: number; // vendor's first quoted rate
+  originalTotal: number;
+  targetRate: number; // buyer's latest offer
+  agreedRate?: number;
+  buyerOffers: number; // max 3
+  rounds: NegotiationRound[];
+  version: number;
+  updatedAt: string; // ISO
+}
 
 export interface ProjectRequirement {
   id: string; // e.g. "PR-2026-001"
@@ -290,6 +358,7 @@ export interface ProjectRequirement {
   unloadingConstraints?: string; // e.g. "Max 10-wheeler truck; no entry 22:00-06:00"
   quoteDeadline?: string; // ISO date-time after which vendors can no longer submit quotes
   purchaseOrder?: PurchaseOrderRef; // PO issued after the PR was awarded
+  approval?: PRApproval; // vendor award waiting for / decided by the approver
 }
 
 /** A delivery received against a PO, with the vendor's invoice (amount calculated from the PO terms) */
@@ -317,12 +386,21 @@ export interface PurchaseOrderReceipt {
   creditDays?: number;
   dueDate?: string; // YYYY-MM-DD
   reminderOn?: string; // YYYY-MM-DD, 2 days before the due date
-  paymentStatus?: 'Unpaid' | 'Paid';
+  paymentStatus?: 'Unpaid' | 'Paid' | 'Not applicable'; // Not applicable = whole delivery rejected, no invoice
   paidOn?: string;
   paymentReference?: string;
   paidBy?: string;
   reminderSentAt?: string;
   reminderEmailStatus?: 'sent' | 'failed' | 'no-recipient';
+  // Material verification (GRN). receivedQty above = accepted quantity (added to stock and invoiced)
+  grnNumber?: string;
+  deliveredQty?: number; // delivered by the vendor (accepted + rejected)
+  rejectedQty?: number;
+  rejectionReason?: string;
+  quality?: QualityGrade;
+  checks?: MaterialVerification['checks'];
+  inspectedBy?: string;
+  onTime?: boolean; // received on or before the PO delivery date
 }
 
 /** A line read from a vendor's tax invoice */
@@ -366,12 +444,20 @@ export interface AppNotification {
     | 'payment-recorded'
     | 'query-raised'
     | 'query-reply'
-    | 'query-status';
+    | 'query-status'
+    | 'approval-requested'
+    | 'approval-approved'
+    | 'approval-rejected'
+    | 'negotiation-offer'
+    | 'negotiation-response'
+    | 'delivery-due'
+    | 'delivery-overdue'
+    | 'material-rejected';
   title: string;
   message: string;
   severity: 'info' | 'success' | 'warning' | 'danger';
   projectId?: string;
-  link?: { view: 'rfqs' | 'pos' | 'queries'; prId?: string; poNumber?: string; queryId?: string };
+  link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals'; prId?: string; poNumber?: string; queryId?: string };
   createdAt: string;
   read: boolean;
 }
@@ -398,15 +484,19 @@ export interface PurchaseOrderRecord {
   loadingCharges: number;
   grandTotal: number;
   deliveryBy: string;
+  deliveryByIso?: string; // YYYY-MM-DD
   paymentTerms?: string;
   creditDays?: number;
-  receivedQty: number;
+  receivedQty: number; // accepted quantity
+  rejectedQty?: number;
+  deliveryFollowUps?: { type: 'before' | 'due' | 'overdue'; at: string; emailed: boolean }[];
   invoicedAmount: number;
   receipts: PurchaseOrderReceipt[];
   deliveryStatus: 'Pending' | 'Partially Received' | 'Received';
   status: 'Issued' | 'Cancelled';
   issuedAt: string;
   issuedBy?: string;
+  approvedBy?: string;
   emailStatus: 'sending' | 'sent' | 'failed' | 'no-email';
   emailedTo?: string;
 }
@@ -466,11 +556,32 @@ export interface VendorQuotation {
   attachment?: { id: string; name: string; size: number; mimeType: string }; // vendor's uploaded quotation file
   declineReason?: string;
 
+  negotiation?: QuoteNegotiation; // counter-offer rounds (quotedRate/totalAmount hold the latest agreed or countered rate)
+
   evaluationScore?: number; // 0 - 100 calculated score
   rank?: number; // 1, 2, 3
   status: QuoteStatus;
   submittedAt: string;
   submittedVia?: 'vendor-portal' | 'internal'; // vendor-portal = submitted by the vendor through their quote link
+}
+
+/** One measured criterion of a vendor's automatic rating */
+export interface VendorCriterionScore {
+  key: 'onTime' | 'quality' | 'fulfilment' | 'price' | 'responsiveness' | 'invoiceAccuracy' | 'paymentTerms';
+  label: string;
+  weight: number; // % weight in the overall score
+  score: number | null; // 0-100, null = no data yet
+  detail: string; // e.g. "4 of 5 deliveries on time"
+}
+
+/** Automatic vendor rating calculated from purchase history */
+export interface VendorPerformance {
+  vendorId: string;
+  vendorName: string;
+  score: number | null; // 0-100 (null = not enough history yet)
+  rating: number | null; // 0-5 stars
+  criteria: VendorCriterionScore[];
+  basis: { rfqsInvited: number; quotes: number; purchaseOrders: number; deliveries: number };
 }
 
 

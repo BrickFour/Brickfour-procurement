@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Project, Material, InventoryTransaction, User, SiteQuery, QueryResponse, RateHistoryPoint, ContractorRecord, ContractorBill, InternalTransferRecord, BillType, Vendor, MarketPriceBenchmark, ProjectRequirement, VendorQuotation, PurchaseOrderRef, PurchaseOrderRecord, PurchaseOrderReceipt } from './types';
+import { Project, Material, InventoryTransaction, User, SiteQuery, QueryResponse, RateHistoryPoint, ContractorRecord, ContractorBill, InternalTransferRecord, BillType, Vendor, MarketPriceBenchmark, ProjectRequirement, VendorQuotation, PurchaseOrderRef, PurchaseOrderRecord, PurchaseOrderReceipt, MaterialVerification } from './types';
 import OrderQueryModal from './components/OrderQueryModal';
 import VendorQuoteModal from './components/VendorQuoteModal';
 import OrderQueryComparisonCenter, { DeliveryInput, DeliveryResult } from './components/OrderQueryComparisonCenter';
@@ -36,7 +36,9 @@ import AdminProjectManager from './components/AdminProjectManager';
 import FloatingChatbot from './components/FloatingChatbot';
 import { loadAppStateFromMongo, syncCollection, fetchServerUpdates, mergeServerDocs } from './services/mongoDataService';
 const brandLogo = '/brickfour-logo.jpeg';
+import ReportsCenter from './components/ReportsCenter';
 import {
+  ClipboardList,
   BookOpen,
   History,
   TrendingUp,
@@ -56,8 +58,10 @@ import { motion, AnimatePresence } from 'motion/react';
 // Browser keys for the signed-in session and the open tab (restored on refresh)
 const SESSION_KEY = 'builder_logged_in';
 const TAB_KEY = 'builder_active_tab';
-const APP_TABS = ['catalog', 'order-queries', 'procurement', 'transfer', 'gst-urd', 'codes', 'ledger', 'analytics', 'queries', 'admin'] as const;
+const APP_TABS = ['catalog', 'order-queries', 'procurement', 'transfer', 'gst-urd', 'codes', 'ledger', 'analytics', 'queries', 'reports', 'admin'] as const;
 type AppTab = (typeof APP_TABS)[number];
+/** The approver works only with approvals (Order Queries & Quotes) and reports */
+const APPROVER_TABS: AppTab[] = ['order-queries', 'reports'];
 
 export default function App() {
   // Theme state is strictly set to light theme as requested
@@ -160,7 +164,7 @@ export default function App() {
   const registerNotificationsRefresh = useCallback((fn: () => void) => {
     notificationsRefresh.current = fn;
   }, []);
-  const [orderFocus, setOrderFocus] = useState<{ view: 'rfqs' | 'pos'; prId?: string; poNumber?: string; nonce: number } | null>(null);
+  const [orderFocus, setOrderFocus] = useState<{ view: 'rfqs' | 'pos' | 'approvals'; prId?: string; poNumber?: string; nonce: number } | null>(null);
 
   const [awardToast, setAwardToast] = useState<{
     vendorName: string;
@@ -272,6 +276,13 @@ export default function App() {
     }
   }, [activeTab]);
 
+  // The approver only has the approvals and reports views; site managers have no reports view
+  const isApprover = currentUser?.role === 'approver';
+  useEffect(() => {
+    if (isApprover && !APPROVER_TABS.includes(activeTab)) setActiveTab('order-queries');
+    if (currentUser?.role === 'site_manager' && activeTab === 'reports') setActiveTab('catalog');
+  }, [isApprover, currentUser?.role, activeTab]);
+
   // Pick up new vendor quotes as soon as the procurement view is opened
   useEffect(() => {
     if (activeTab === 'order-queries') refreshVendorQuotes();
@@ -304,28 +315,14 @@ export default function App() {
   };
 
   /**
-   * Award a PR to a vendor: marks the winning quote, then the server generates the Purchase Order (PDF),
-   * stores it in the database and emails it to the vendor.
+   * A requirement was changed on the server (sent for approval, approved -> PO issued, or rejected): use the server's copy.
+   * Vendors are awarded only through the approver; the server issues the PO when the award is approved.
    */
-  const handleAwardPR = async (prId: string, vendorId: string): Promise<boolean> => {
-    const targetPR = prs.find((p) => p.id === prId);
-    const winningQuote = quotes.find((q) => q.prId === prId && q.vendorId === vendorId && q.status !== 'Declined');
-    if (!targetPR || !winningQuote) return false;
-    const ok = window.confirm(
-      `Award ${prId} (${targetPR.materialName}) to ${winningQuote.vendorName} for Rs. ${winningQuote.totalAmount.toLocaleString('en-IN')}?\n\n` +
-        'A purchase order will be generated and emailed to the vendor.'
-    );
-    if (!ok) return false;
-
-    poAttemptedRef.current.add(prId); // this call issues the PO; the auto-issuer must not race it
-    setPrs((prev) => prev.map((p) => (p.id === prId ? { ...p, status: 'Awarded', selectedVendorId: vendorId } : p)));
-    setQuotes((prev) =>
-      prev.map((q) =>
-        q.prId === prId && q.status !== 'Declined' ? { ...q, status: q.vendorId === vendorId ? 'Awarded' : 'Rejected' } : q
-      )
-    );
-    await issuePurchaseOrder(prId, vendorId);
-    return true;
+  const handlePrUpdated = (updated: ProjectRequirement) => {
+    if (!updated?.id) return;
+    poAttemptedRef.current.add(updated.id); // the server has already issued (or tried) the PO
+    setPrs((prev) => (prev.some((p) => p.id === updated.id) ? prev.map((p) => (p.id === updated.id ? updated : p)) : [updated, ...prev]));
+    refreshVendorQuotes();
   };
 
   /**
@@ -406,6 +403,19 @@ export default function App() {
       if (!res.ok || !json?.success) return { ok: false, error: apiError(json, 'Could not record the delivery. Please try again.').message };
       const r: PurchaseOrderReceipt = json.receipt;
       const round2 = (n: number) => Math.round(n * 100) / 100;
+      notificationsRefresh.current?.();
+      // Whole delivery rejected on inspection: nothing goes into stock and there is no bill
+      if (!(r.receivedQty > 0)) return { ok: true, receipt: r, stockUpdated: false };
+      const verification: MaterialVerification = {
+        grnNumber: r.grnNumber,
+        receivedQty: r.deliveredQty ?? r.receivedQty,
+        acceptedQty: r.receivedQty,
+        rejectedQty: r.rejectedQty || 0,
+        ...(r.rejectionReason ? { rejectionReason: r.rejectionReason } : {}),
+        quality: r.quality || 'Good',
+        checks: r.checks || input.checks,
+        inspectedBy: r.inspectedBy || input.inspectedBy,
+      };
 
       // The ordered material in the project's stock: by id, else by name in the same project
       const projectId = po.projectId || materials.find((m) => m.id === po.materialId)?.projectId;
@@ -430,7 +440,7 @@ export default function App() {
         vendorGstin: po.vendorGstin,
         vendorName: po.vendorName,
       };
-      const notes = `Received against ${po.poNumber} - invoice ${r.invoiceNumber} dated ${r.invoiceDate}${r.notes ? ` (${r.notes})` : ''}`;
+      const notes = `${r.grnNumber ? `${r.grnNumber}: ` : ''}Received against ${po.poNumber} - invoice ${r.invoiceNumber} dated ${r.invoiceDate}${(r.rejectedQty || 0) > 0 ? ` (${r.rejectedQty} ${po.unit} rejected: ${r.rejectionReason})` : ''}${r.notes ? ` (${r.notes})` : ''}`;
       const invoiceUrl = r.invoiceFile ? `/api/purchase-orders/${encodeURIComponent(po.poNumber)}/documents/${r.invoiceFile.id}` : undefined;
 
       let estimationDelta: number | undefined;
@@ -451,6 +461,7 @@ export default function App() {
           notes,
           operator: currentUser.name,
           date: r.receivedOn,
+          verification,
         });
       } else if (projectId) {
         // Not in this project's catalogue yet: create it with the delivered stock
@@ -489,6 +500,7 @@ export default function App() {
             notes,
             operator: currentUser.name,
             date: r.receivedOn,
+            verification,
           },
           ...prev,
         ]);
@@ -565,8 +577,8 @@ export default function App() {
       return projects;
     }
 
-    if (currentUser.role === 'admin') {
-      // System Administrators see ALL projects across the platform
+    if (currentUser.role === 'admin' || currentUser.role === 'approver') {
+      // Administrators and the approver see ALL projects across the platform
       return projects;
     }
 
@@ -1271,6 +1283,7 @@ export default function App() {
       vendorName: newTx.vendorName || targetMat?.vendorName,
       invoiceUrl: newTx.invoiceUrl,
       invoiceFileName: newTx.invoiceFileName,
+      ...(newTx.type === 'addition' && newTx.verification ? { verification: newTx.verification } : {}),
     };
 
     // Update material currentStock level and append rateHistory point if rate is provided
@@ -1385,6 +1398,7 @@ export default function App() {
       vendorName?: string;
       invoiceUrl?: string;
       invoiceFileName?: string;
+      verification?: MaterialVerification;
     }
   ) => {
     const mat = materials.find(m => m.id === materialId);
@@ -1418,6 +1432,7 @@ export default function App() {
       vendorName: details?.vendorName,
       invoiceUrl: details?.invoiceUrl,
       invoiceFileName: details?.invoiceFileName,
+      verification: details?.verification,
     });
   };
 
@@ -1433,7 +1448,8 @@ export default function App() {
           if (user.assignedProjectId) {
             setSelectedProjectId(user.assignedProjectId);
           }
-          setActiveTab('catalog');
+          setActiveTab(user.role === 'approver' ? 'order-queries' : 'catalog');
+          if (user.role === 'approver') setOrderFocus({ view: 'approvals', nonce: Date.now() });
           setIsLoggedIn(true);
         }}
         onRegisterAdmin={(newAdminData) => {
@@ -1495,10 +1511,10 @@ export default function App() {
               </div>
               <div className="hidden sm:flex items-center gap-2 leading-tight">
                 <span className="text-sm font-semibold text-slate-900">
-                  {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : 'Site Manager')}
+                  {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'approver' ? 'Approver' : 'Site Manager')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
-                  {currentUser.role === 'admin' ? 'Admin' : 'Site Manager'}
+                  {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'approver' ? 'Approver' : 'Site Manager'}
                 </span>
               </div>
             </div>
@@ -1520,7 +1536,9 @@ export default function App() {
       {/* Main Core Dashboard Stage */}
       <main className="w-full max-w-[1750px] mx-auto px-4 sm:px-6 lg:px-8 mt-6 space-y-6">
         
-        {/* Project Selector Zone */}
+        {/* Project Selector Zone (not for the approver, who sees all projects) */}
+        {!isApprover && (
+        <>
         <ProjectSelector
           projects={userVisibleProjects}
           selectedProjectId={selectedProjectId}
@@ -1545,9 +1563,12 @@ export default function App() {
           onReorderClick={handleReorderClick}
           onDailyActivitiesClick={handleDailyActivitiesClick}
         />
+        </>
+        )}
 
         {/* Modular Navigation Tabs with indicators */}
         <div className="flex gap-1 border-b border-slate-200 mt-2 overflow-x-auto" id="navigation-tabs">
+          {!isApprover && (
           <button
             id="tab-catalog"
             onClick={() => {
@@ -1567,6 +1588,7 @@ export default function App() {
                 : userVisibleMaterials.filter(m => m.projectId === selectedProjectId).length
             })
           </button>
+          )}
 
           <button
             id="tab-order-queries"
@@ -1586,6 +1608,8 @@ export default function App() {
             )}
           </button>
 
+          {!isApprover && (
+          <>
           <button
             id="tab-procurement"
             onClick={() => setActiveTab('procurement')}
@@ -1692,6 +1716,23 @@ export default function App() {
             <TrendingUp size={14} />
             Visual Analytics
           </button>
+          </>
+          )}
+
+          {(currentUser.role === 'admin' || isApprover) && (
+            <button
+              id="tab-reports"
+              onClick={() => setActiveTab('reports')}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 -mb-px transition-colors cursor-pointer whitespace-nowrap ${
+                activeTab === 'reports'
+                  ? 'border-[#23408e] text-[#23408e] bg-[#f5f8fd]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+              }`}
+            >
+              <ClipboardList size={14} />
+              Reports
+            </button>
+          )}
 
           {currentUser.role === 'admin' && (
             <button
@@ -1779,12 +1820,26 @@ export default function App() {
                     setQuoteModalPR(pr);
                     setIsQuoteModalOpen(true);
                   }}
-                  onAwardPR={handleAwardPR}
+                  onPrUpdated={handlePrUpdated}
+                  onQuotesChanged={refreshVendorQuotes}
+                  onPoIssued={() => notificationsRefresh.current?.()}
                   onRecordDelivery={handleRecordDelivery}
                   onRetryPurchaseOrder={handleRetryPurchaseOrder}
                   poRefreshKey={poRefreshKey}
                   focusRequest={orderFocus}
                 />
+              </motion.div>
+            )}
+
+            {activeTab === 'reports' && (currentUser.role === 'admin' || isApprover) && (
+              <motion.div
+                key="reports-view"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                <ReportsCenter currentUser={currentUser} />
               </motion.div>
             )}
 
