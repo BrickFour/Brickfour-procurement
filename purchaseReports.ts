@@ -289,7 +289,25 @@ export async function buildPendingReport(db: Db, timeZone: string) {
       requestedBy: p.approval.requestedBy,
       requestedOn: localIso(p.approval.requestedAt, timeZone),
       waitingDays: daysBetween(localIso(p.approval.requestedAt, timeZone), today),
-    }));
+    }))
+    // Purchase requests from site managers / departments waiting for an admin (no vendor chosen yet)
+    .concat(
+      prs
+        .filter((p: any) => p.status === 'Awaiting Admin Approval')
+        .map((p: any) => {
+          const at = p.requestApproval?.requestedAt;
+          return {
+            prId: p.id,
+            material: p.materialName,
+            project: p.department ? `${p.department} department` : p.projectName,
+            vendor: 'Purchase request (no RFQ yet)',
+            amount: Math.round((Number(p.quantity) || 0) * (Number(p.targetBudgetRate) || 0)),
+            requestedBy: p.requestApproval?.requestedBy || p.raisedByName,
+            requestedOn: at ? localIso(at, timeZone) : '',
+            waitingDays: at ? daysBetween(localIso(at, timeZone), today) : (ageDays(p.createdAt) as any),
+          };
+        })
+    );
 
   const prById = new Map(prs.map((p: any) => [p.id, p]));
   const negotiations = quotes

@@ -15,7 +15,7 @@ interface NotificationCenterProps {
 }
 
 const POLL_MS = 20000;
-const URGENT: AppNotification['type'][] = ['payment-due', 'payment-overdue', 'po-email-failed', 'approval-requested', 'delivery-overdue', 'material-rejected'];
+const URGENT: AppNotification['type'][] = ['payment-due', 'payment-overdue', 'po-email-failed', 'approval-requested', 'request-submitted', 'delivery-overdue', 'material-rejected'];
 
 const ICONS: Record<AppNotification['type'], React.ComponentType<{ size?: number; className?: string }>> = {
   'quote-received': FileText,
@@ -38,6 +38,9 @@ const ICONS: Record<AppNotification['type'], React.ComponentType<{ size?: number
   'delivery-due': CalendarClock,
   'delivery-overdue': AlertTriangle,
   'material-rejected': PackageX,
+  'request-submitted': ShieldCheck,
+  'request-approved': ShieldCheck,
+  'request-rejected': ShieldX,
 };
 const TONE: Record<AppNotification['severity'], string> = {
   info: 'bg-[#eaf0fb] text-[#23408e]',

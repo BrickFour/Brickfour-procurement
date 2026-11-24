@@ -196,7 +196,10 @@ type NotificationType =
   | 'negotiation-response'
   | 'delivery-due'
   | 'delivery-overdue'
-  | 'material-rejected';
+  | 'material-rejected'
+  | 'request-submitted'
+  | 'request-approved'
+  | 'request-rejected';
 
 /**
  * Creates an in-app notification. `id` doubles as a de-duplication key: the same event
@@ -211,7 +214,7 @@ async function notify(
     message: string;
     severity?: 'info' | 'success' | 'warning' | 'danger';
     projectId?: string;
-    link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals'; prId?: string; poNumber?: string; queryId?: string };
+    link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals' | 'requests'; prId?: string; poNumber?: string; queryId?: string };
     /** Users who already know about it (e.g. the person who caused it) - no unread badge / pop-up for them */
     readBy?: string[];
   }
@@ -339,7 +342,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         collection === 'vendor_quotations'
           ? { negotiation: 1, quotedRate: 1, totalAmount: 1 }
           : collection === 'project_requirements'
-            ? { approval: 1, status: 1, selectedVendorId: 1, purchaseOrder: 1 }
+            ? { approval: 1, status: 1, selectedVendorId: 1, purchaseOrder: 1, requestApproval: 1, invitedVendorIds: 1, vendorQuoteTokens: 1, enquiryDispatchedAt: 1 }
             : {};
       const existing = keys.length
         ? await col.find({ [keyField]: { $in: keys } }, { projection: { [keyField]: 1, _createdAt: 1, ...serverOwned } }).toArray()
@@ -355,6 +358,17 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
           doc = { ...raw, negotiation: prev.negotiation, quotedRate: prev.quotedRate, totalAmount: prev.totalAmount };
         }
         if (prev && collection === 'project_requirements') {
+          // A purchase request decided by an admin cannot be put back to "waiting" by a stale browser copy
+          if (prev.requestApproval && prev.requestApproval.status !== 'Pending' && raw.requestApproval?.status !== prev.requestApproval.status) {
+            doc = {
+              ...doc,
+              requestApproval: prev.requestApproval,
+              ...(['Awaiting Admin Approval', 'Request Rejected'].includes(raw.status) ? { status: prev.status } : {}),
+              ...(prev.invitedVendorIds ? { invitedVendorIds: prev.invitedVendorIds } : {}),
+              ...(prev.vendorQuoteTokens ? { vendorQuoteTokens: prev.vendorQuoteTokens } : {}),
+              ...(prev.enquiryDispatchedAt ? { enquiryDispatchedAt: prev.enquiryDispatchedAt } : {}),
+            };
+          }
           if ((prev.approval?.history?.length || 0) > (raw.approval?.history?.length || 0)) {
             doc = { ...doc, approval: prev.approval, status: prev.status, selectedVendorId: prev.selectedVendorId };
           }
@@ -1305,7 +1319,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     const approved = pr.approval?.status === 'Approved' && pr.approval.vendorId === vendorId;
     const legacyAward = !pr.approval && pr.status === 'Awarded';
     if (!approved && !legacyAward) {
-      throw new HttpError(403, 'This order must be approved by the approver before a purchase order can be issued.');
+      throw new HttpError(403, 'This order must be approved by an admin before a purchase order can be issued.');
     }
     const vendor: any = await db.collection('vendors').findOne({ id: vendorId }, { projection: { _id: 0 } });
     const awardedBy = opts.awardedBy;
@@ -1465,13 +1479,19 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
   /* Approval of the selected vendor before the PO is issued             */
   /* ------------------------------------------------------------------ */
 
-  const approverEmails = async (db: Db): Promise<string[]> => {
-    const users = await db.collection('users').find({ role: 'approver' }, { projection: { _id: 0, email: 1 } }).toArray();
+  // Admins approve orders raised by site managers and department staff (APPROVER_EMAIL adds extra addresses)
+  const adminEmails = async (db: Db): Promise<string[]> => {
+    const users = await db.collection('users').find({ role: 'admin' }, { projection: { _id: 0, email: 1 } }).toArray();
     const extra = String(process.env.APPROVER_EMAIL || '').split(',');
-    return [...new Set([...users.map((u: any) => String(u.email || '').trim()), ...extra.map((s) => s.trim())])].filter((e) => isValidEmail(e));
+    return [...new Set([...users.map((u: any) => String(u.email || '').trim().toLowerCase()), ...extra.map((s) => s.trim().toLowerCase())])].filter((e) => isValidEmail(e));
   };
 
-  // Purchase team sends the selected vendor for approval
+  /** The signed-in user's record (the role is always taken from the database, never from the browser) */
+  const findUser = async (db: Db, id: unknown): Promise<any | null> =>
+    typeof id === 'string' && id ? db.collection('users').findOne({ id }, { projection: { _id: 0, password: 0 } }) : null;
+
+  // Vendor selection: an admin's selection is approved straight away and the PO issued;
+  // anyone else's selection waits for an admin's approval.
   app.post('/api/approvals/request', async (req, res) => {
     try {
       const body = req.body || {};
@@ -1480,6 +1500,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       const requestedBy = typeof body.requestedBy === 'string' ? body.requestedBy.slice(0, 100) : 'Purchase team';
       const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
       const db = await getMongoDb();
+      const requester = await findUser(db, body.requestedById);
+      const byAdmin = requester?.role === 'admin';
       const prs = db.collection('project_requirements');
       let pr: any = await prs.findOne({ id: prId }, { projection: { _id: 0 } });
       // A requirement created moments ago may not be saved yet
@@ -1513,6 +1535,39 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
           { action: 'requested', by: requestedBy, at: now, vendorName: quote.vendorName, amount: quote.totalAmount, ...(note ? { comment: note } : {}) },
         ],
       };
+
+      // Admin order: no approval needed - award and issue the PO now
+      if (byAdmin) {
+        const approved = {
+          ...approval,
+          status: 'Approved',
+          decidedBy: requestedBy,
+          decidedAt: now,
+          comment: 'Ordered by an admin - no approval needed',
+          history: [
+            ...approval.history,
+            { action: 'approved', by: requestedBy, at: now, vendorName: quote.vendorName, amount: quote.totalAmount, comment: 'Ordered by an admin - no approval needed' },
+          ],
+        };
+        const claim = await prs.updateOne(
+          { id: prId, status: { $nin: ['Pending Approval', 'Awarded', 'Closed'] } },
+          { $set: { approval: approved, status: 'Awarded', selectedVendorId: vendorId } }
+        );
+        if (claim.matchedCount !== 1) throw new HttpError(409, `${prId} was updated by someone else a moment ago. Please refresh.`);
+        await db.collection('vendor_quotations').updateMany({ prId, vendorId }, { $set: { status: 'Awarded' } });
+        let purchaseOrder: any;
+        let poError: string | undefined;
+        try {
+          purchaseOrder = (await issuePurchaseOrder(db, { prId, vendorId, awardedBy: requestedBy })).purchaseOrder;
+        } catch (e: any) {
+          poError = e instanceof HttpError ? e.message : 'The purchase order could not be generated. Use "Retry PO" under Purchase Orders.';
+          console.error(`[Award] ${prId}: awarded but PO failed:`, e?.message || e);
+        }
+        const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
+        console.log(`[Award] ${prId}: ${quote.vendorName} awarded by admin ${requestedBy}${purchaseOrder ? `, ${purchaseOrder.poNumber} issued` : ''}`);
+        return res.json({ success: true, autoApproved: true, pr: updated, ...(purchaseOrder ? { purchaseOrder } : {}), ...(poError ? { poError } : {}) });
+      }
+
       await prs.updateOne({ id: prId }, { $set: { status: 'Pending Approval', approval } });
       await notify(db, {
         id: `approval-req-${prId}-${approval.history.length}`,
@@ -1525,7 +1580,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       });
 
       let emailed = 0;
-      for (const to of await approverEmails(db)) {
+      for (const to of await adminEmails(db)) {
         const sent = await sendAppEmail({
           to,
           subject: `Approval needed: ${pr.materialName} - ${quote.vendorName} (Rs. ${formatINR(quote.totalAmount)})`,
@@ -1533,8 +1588,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
           content: {
             heading: 'Purchase approval needed',
             preheader: `${quote.vendorName} selected for ${pr.materialName} at Rs. ${formatINR(quote.totalAmount)}.`,
-            greeting: 'Dear Approver,',
-            paragraphs: [`${requestedBy} has selected a vendor for the requirement below. The purchase order will be issued once you approve it.`],
+            greeting: 'Dear Admin,',
+            paragraphs: [`${requestedBy} has selected a vendor for the requirement below. The purchase order will be issued once an admin approves it.`],
             details: [
               { label: 'Requirement', value: `${prId} - ${pr.materialName}` },
               { label: 'Project', value: pr.projectName },
@@ -1554,24 +1609,25 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         if (sent.ok) emailed++;
       }
       const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
-      console.log(`[Approval] ${prId}: ${quote.vendorName} sent for approval by ${requestedBy} (${emailed} approver email(s))`);
+      console.log(`[Approval] ${prId}: ${quote.vendorName} sent for approval by ${requestedBy} (${emailed} admin email(s))`);
       return res.json({ success: true, pr: updated });
     } catch (err) {
       return sendError(res, err, 'Unable to send this order for approval.');
     }
   });
 
-  // Approver approves (PO issued and emailed straight away) or rejects (back to comparison) the selected vendor
+  // An admin approves (PO issued and emailed straight away) or rejects (back to comparison) the selected vendor
   app.post('/api/approvals/decide', async (req, res) => {
     try {
       const body = req.body || {};
       const prId = String(body.prId || '');
       const decision = String(body.decision || '');
       const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
-      const decidedBy = typeof body.decidedBy === 'string' ? body.decidedBy.slice(0, 100) : 'Approver';
+      const decidedBy = typeof body.decidedBy === 'string' ? body.decidedBy.slice(0, 100) : 'Admin';
       if (!['approve', 'reject'].includes(decision)) throw new HttpError(400, 'Please choose Approve or Reject.');
       if (decision === 'reject' && !comment) throw new HttpError(400, 'Please give a reason for rejecting.');
       const db = await getMongoDb();
+      if ((await findUser(db, body.decidedById))?.role !== 'admin') throw new HttpError(403, 'Only an admin can approve or reject orders.');
       const prs = db.collection('project_requirements');
       const pr: any = await prs.findOne({ id: prId }, { projection: { _id: 0 } });
       if (!pr) throw new HttpError(404, 'This requirement was not found. Please refresh the page.');
@@ -1635,6 +1691,169 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
       console.log(`[Approval] ${prId}: ${decision}d by ${decidedBy}${purchaseOrder ? `, ${purchaseOrder.poNumber} issued` : ''}`);
       return res.json({ success: true, pr: updated, ...(purchaseOrder ? { purchaseOrder } : {}), ...(poError ? { poError } : {}) });
+    } catch (err) {
+      return sendError(res, err, 'Unable to record this decision.');
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Purchase requests by site managers / departments: admin approval    */
+  /* before any RFQ goes to vendors (admins' own requests go out at once) */
+  /* ------------------------------------------------------------------ */
+
+  const requestEmailDetails = (pr: any) => [
+    { label: 'Request', value: `${pr.id} - ${pr.materialName}` },
+    { label: pr.department ? 'Department' : 'Project', value: pr.department ? `${pr.department}` : pr.projectName },
+    { label: 'Quantity', value: `${pr.quantity} ${pr.unit}` },
+    { label: 'Required by', value: String(pr.requiredDate || '-') },
+    ...(pr.targetBudgetRate ? [{ label: 'Estimated rate', value: `Rs. ${formatINR(pr.targetBudgetRate)} per ${pr.unit}` }] : []),
+    { label: 'Urgency', value: String(pr.urgency || 'Standard') },
+    ...(pr.purpose ? [{ label: 'Purpose', value: String(pr.purpose).slice(0, 300) }] : []),
+  ];
+
+  // A site manager / department user raised a request: tell the admins
+  app.post('/api/requests/submit', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const raw = body.pr;
+      if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) throw new HttpError(400, 'The request details are missing.');
+      const db = await getMongoDb();
+      const requester = await findUser(db, body.requestedById);
+      if (!requester) throw new HttpError(403, 'Please sign in again to raise a request.');
+      if (requester.role === 'admin') throw new HttpError(400, 'Admin orders do not need approval.');
+      const prs = db.collection('project_requirements');
+      const { _id, _createdAt, ...doc } = raw;
+      // Saved here as well, so the admins can see it even if the browser has not synced yet
+      await prs.updateOne(
+        { id: doc.id },
+        { $setOnInsert: { ...doc, status: 'Awaiting Admin Approval', vendorQuoteTokens: {}, _createdAt: new Date() } },
+        { upsert: true }
+      );
+      const pr: any = await prs.findOne({ id: doc.id }, { projection: { _id: 0 } });
+      if (pr?.status !== 'Awaiting Admin Approval') throw new HttpError(409, `${doc.id} is not waiting for approval.`);
+      const who = `${requester.name}${requester.department ? ` (${requester.department})` : ''}`;
+      await notify(db, {
+        id: `request-${pr.id}`,
+        type: 'request-submitted',
+        title: `Approval needed: ${pr.materialName}`,
+        message: `${who} requested ${pr.quantity} ${pr.unit} of ${pr.materialName}${pr.department ? '' : ` for ${pr.projectName}`}. Approve it to send the RFQ to vendors.`,
+        severity: 'warning',
+        projectId: pr.projectId,
+        link: { view: 'requests', prId: pr.id },
+        readBy: [requester.id],
+      });
+      let emailed = 0;
+      for (const to of await adminEmails(db)) {
+        const sent = await sendAppEmail({
+          to,
+          subject: `Purchase request for approval: ${pr.materialName} (${pr.id}) from ${who}`,
+          label: 'Purchase request',
+          content: {
+            heading: 'Purchase request waiting for approval',
+            preheader: `${who} requested ${pr.quantity} ${pr.unit} of ${pr.materialName}.`,
+            greeting: 'Dear Admin,',
+            paragraphs: [`${who} has raised the purchase request below. No quotation request goes to vendors until an admin approves it.`],
+            details: requestEmailDetails(pr),
+            ...(pr.specifications ? { sections: [{ title: 'Specifications', text: String(pr.specifications).slice(0, 1000) }] } : {}),
+            cta: { label: 'Review in PRAVAH', url: `${appBaseUrl(req)}/` },
+            closing: ['Regards,', `Procurement System, ${COMPANY.name}`],
+          },
+        });
+        if (sent.ok) emailed++;
+      }
+      console.log(`[Request] ${pr.id} raised by ${who} (${emailed} admin email(s))`);
+      return res.json({ success: true, emailed });
+    } catch (err) {
+      return sendError(res, err, 'Your request was saved, but the admins could not be notified.');
+    }
+  });
+
+  // An admin approves a request (the browser then emails the RFQ to the chosen vendors) or rejects it
+  app.post('/api/requests/decide', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const prId = String(body.prId || '');
+      const decision = String(body.decision || '');
+      const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
+      if (!['approve', 'reject'].includes(decision)) throw new HttpError(400, 'Please choose Approve or Reject.');
+      if (decision === 'reject' && !comment) throw new HttpError(400, 'Please give a reason for rejecting.');
+      const db = await getMongoDb();
+      const admin = await findUser(db, body.decidedById);
+      if (admin?.role !== 'admin') throw new HttpError(403, 'Only an admin can approve or reject requests.');
+      const prs = db.collection('project_requirements');
+      const pr: any = await prs.findOne({ id: prId }, { projection: { _id: 0 } });
+      if (!pr) throw new HttpError(404, 'This request was not found. Please refresh the page.');
+      if (pr.status !== 'Awaiting Admin Approval') throw new HttpError(409, 'This request is not waiting for approval (it may already have been decided).');
+
+      const now = new Date().toISOString();
+      const requestApproval = {
+        ...(pr.requestApproval || {}),
+        status: decision === 'approve' ? 'Approved' : 'Rejected',
+        decidedBy: admin.name,
+        decidedAt: now,
+        ...(comment ? { comment } : {}),
+      };
+      let set: any;
+      if (decision === 'approve') {
+        const invited: string[] = Array.isArray(body.invitedVendorIds) ? body.invitedVendorIds.filter((v: unknown) => typeof v === 'string').slice(0, 50) : [];
+        const tokens = body.vendorQuoteTokens && typeof body.vendorQuoteTokens === 'object' ? body.vendorQuoteTokens : {};
+        if (!invited.length) throw new HttpError(400, 'Please choose at least one vendor to send the quotation request to.');
+        if (invited.some((v) => typeof tokens[v] !== 'string' || !tokens[v])) throw new HttpError(400, 'The vendor links could not be created. Please try again.');
+        const deadline = typeof body.quoteDeadline === 'string' && !Number.isNaN(Date.parse(body.quoteDeadline)) ? new Date(body.quoteDeadline).toISOString() : undefined;
+        set = {
+          requestApproval,
+          status: 'Enquiry Sent',
+          invitedVendorIds: invited,
+          vendorQuoteTokens: Object.fromEntries(invited.map((v) => [v, String(tokens[v]).slice(0, 100)])),
+          enquiryDispatchedAt: new Date().toLocaleString(),
+          ...(deadline ? { quoteDeadline: deadline } : {}),
+        };
+      } else {
+        set = { requestApproval, status: 'Request Rejected' };
+      }
+      // Atomic: only one admin's decision can win
+      const claim = await prs.updateOne({ id: prId, status: 'Awaiting Admin Approval' }, { $set: set });
+      if (claim.modifiedCount !== 1) throw new HttpError(409, 'This request was decided by another admin a moment ago. Please refresh.');
+
+      await notify(db, {
+        id: `request-${decision}-${prId}`,
+        type: decision === 'approve' ? 'request-approved' : 'request-rejected',
+        title: decision === 'approve' ? `Request approved: ${pr.materialName}` : `Request rejected: ${pr.materialName}`,
+        message:
+          decision === 'approve'
+            ? `${admin.name} approved ${prId}. The quotation request has been sent to ${set.invitedVendorIds.length} vendor(s).`
+            : `${admin.name} rejected ${prId}: "${comment.slice(0, 160)}".`,
+        severity: decision === 'approve' ? 'success' : 'danger',
+        projectId: pr.projectId,
+        link: { view: decision === 'approve' ? 'rfqs' : 'requests', prId },
+        readBy: [admin.id],
+      });
+      // Tell the person who raised it
+      const requester = await findUser(db, pr.requestApproval?.requestedById || pr.raisedByUserId);
+      const to = String(requester?.email || '').trim();
+      if (to && isValidEmail(to)) {
+        await sendAppEmail({
+          to,
+          subject: `Your purchase request ${prId} was ${decision === 'approve' ? 'approved' : 'rejected'}`,
+          label: 'Purchase request',
+          content: {
+            heading: decision === 'approve' ? 'Purchase request approved' : 'Purchase request rejected',
+            preheader: `${pr.materialName} - ${decision === 'approve' ? 'approved' : 'rejected'} by ${admin.name}.`,
+            greeting: `Dear ${requester.name},`,
+            paragraphs: [
+              decision === 'approve'
+                ? `${admin.name} approved your request. The purchase team has asked vendors for quotations and will place the order.`
+                : `${admin.name} rejected your request. Reason: "${comment}"`,
+            ],
+            details: requestEmailDetails(pr),
+            cta: { label: 'Open PRAVAH', url: `${appBaseUrl(req)}/` },
+            closing: ['Regards,', `Procurement Team, ${COMPANY.name}`],
+          },
+        }).catch(() => undefined);
+      }
+      const updated = await prs.findOne({ id: prId }, { projection: { _id: 0, _createdAt: 0 } });
+      console.log(`[Request] ${prId}: ${decision === 'approve' ? 'approved' : 'rejected'} by ${admin.name}`);
+      return res.json({ success: true, pr: updated });
     } catch (err) {
       return sendError(res, err, 'Unable to record this decision.');
     }

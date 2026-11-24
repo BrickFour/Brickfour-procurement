@@ -25,7 +25,13 @@ import {
   landedCostPerUnit,
   parseCreditDays,
   EVALUATION_CRITERIA_TEXT,
+  getVendorsForMaterialCode,
 } from '../lib/vendorComparison';
+import { withVendorQuoteTokens } from '../lib/vendorQuoteLinks';
+import { sendRfqEmails } from '../lib/rfqDispatch';
+
+/** Requirements that are not open RFQs: waiting for an admin, rejected, waiting for vendor approval, awarded or closed */
+const NOT_OPEN: string[] = ['Awaiting Admin Approval', 'Request Rejected', 'Pending Approval', 'Awarded', 'Closed'];
 import {
   ArrowLeft,
   Search,
@@ -89,6 +95,7 @@ export interface DeliveryResult {
   materialCreated?: boolean;
   projectName?: string;
   estimationDelta?: number; // change in the project's estimation cost (Rs.)
+  departmentOrder?: boolean; // delivered to a department (no site stock)
 }
 
 interface OrderQueryComparisonCenterProps {
@@ -115,7 +122,7 @@ interface OrderQueryComparisonCenterProps {
   /** Manually retry the automatic PO for an awarded PR */
   onRetryPurchaseOrder: (prId: string, vendorId: string) => Promise<boolean>;
   /** Open a specific RFQ / purchase order (e.g. from a notification) */
-  focusRequest?: { view: 'rfqs' | 'pos' | 'approvals'; prId?: string; poNumber?: string; nonce: number } | null;
+  focusRequest?: { view: 'rfqs' | 'pos' | 'approvals' | 'requests'; prId?: string; poNumber?: string; nonce: number } | null;
 }
 
 /** Payment state of a recorded invoice */
@@ -541,8 +548,10 @@ export default function OrderQueryComparisonCenter({
   projects,
   materials,
 }: OrderQueryComparisonCenterProps) {
-  const isApprover = currentUser.role === 'approver';
-  const [view, setView] = useState<'rfqs' | 'approvals' | 'pos'>(isApprover ? 'approvals' : 'rfqs');
+  // Admins place orders without approval and approve everyone else's requests and vendor selections
+  const isAdmin = currentUser.role === 'admin';
+  const [view, setView] = useState<'requests' | 'rfqs' | 'approvals' | 'pos'>('rfqs');
+  const [requestDecision, setRequestDecision] = useState<{ pr: ProjectRequirement; kind: 'approve' | 'reject' } | null>(null);
   const { byVendor: vendorPerf, refresh: refreshVendorPerf } = useVendorPerformance();
   const [approvalDialog, setApprovalDialog] = useState<{ pr: ProjectRequirement; quote: VendorQuotation } | null>(null);
   const [negotiateDialog, setNegotiateDialog] = useState<{ pr: ProjectRequirement; quote: VendorQuotation; peers: VendorQuotation[] } | null>(null);
@@ -578,8 +587,8 @@ export default function OrderQueryComparisonCenter({
     setView(focusRequest.view);
     if (focusRequest.view === 'rfqs') {
       const pr = focusRequest.prId ? prs.find((p) => p.id === focusRequest.prId) : undefined;
-      setSelectedPrId(pr && !['Awarded', 'Closed', 'Pending Approval'].includes(pr.status) ? pr.id : null);
-    } else if (focusRequest.view === 'approvals') {
+      setSelectedPrId(pr && !NOT_OPEN.includes(pr.status) ? pr.id : null);
+    } else if (focusRequest.view === 'approvals' || focusRequest.view === 'requests') {
       setSelectedPrId(null);
     } else {
       setSelectedPrId(null);
@@ -625,19 +634,71 @@ export default function OrderQueryComparisonCenter({
   const requestApproval = async (pr: ProjectRequirement, quote: VendorQuotation, note: string) => {
     const json = await postJson(
       '/api/approvals/request',
-      { prId: pr.id, vendorId: quote.vendorId, requestedBy: currentUser.name, note, pr },
+      { prId: pr.id, vendorId: quote.vendorId, requestedBy: currentUser.name, requestedById: currentUser.id, note, pr },
       'Could not send this order for approval. Please try again.'
     );
     onPrUpdated(json.pr);
     setSelectedPrId(null);
+    if (json.autoApproved) {
+      // Admin order: awarded and the PO issued straight away
+      setView('pos');
+      setNotice(
+        json.purchaseOrder
+          ? `Awarded to ${quote.vendorName}. Purchase order ${json.purchaseOrder.poNumber} was generated${json.purchaseOrder.emailStatus === 'sent' ? ` and emailed to ${json.purchaseOrder.emailedTo}` : ''}.`
+          : `Awarded to ${quote.vendorName}. ${safeText(json.poError, 'The purchase order could not be generated - use "Retry PO" under Purchase Orders.')}`
+      );
+      loadPurchaseOrders();
+      onPoIssued?.();
+      refreshVendorPerf();
+      return;
+    }
     setView('approvals');
-    setNotice(`${pr.id} sent for approval: ${quote.vendorName} at ${rs(quote.totalAmount)}. The PO is issued as soon as it is approved.`);
+    setNotice(`${pr.id} sent to the admins for approval: ${quote.vendorName} at ${rs(quote.totalAmount)}. The PO is issued as soon as an admin approves it.`);
+  };
+
+  /** Admin decision on a purchase request from a site manager / department */
+  const decideRequest = async (pr: ProjectRequirement, kind: 'approve' | 'reject', input: { comment: string; vendorIds?: string[]; quoteDeadline?: string }) => {
+    if (kind === 'reject') {
+      const json = await postJson(
+        '/api/requests/decide',
+        { prId: pr.id, decision: 'reject', comment: input.comment, decidedById: currentUser.id },
+        'Could not record your decision. Please try again.'
+      );
+      onPrUpdated(json.pr);
+      setNotice(`${pr.id} was rejected. ${pr.raisedByName} has been told why.`);
+      return;
+    }
+    const vendorIds = input.vendorIds || [];
+    const withTokens = withVendorQuoteTokens({ ...pr, invitedVendorIds: vendorIds }, vendorIds);
+    const json = await postJson(
+      '/api/requests/decide',
+      {
+        prId: pr.id,
+        decision: 'approve',
+        comment: input.comment,
+        decidedById: currentUser.id,
+        invitedVendorIds: vendorIds,
+        vendorQuoteTokens: withTokens.vendorQuoteTokens,
+        quoteDeadline: input.quoteDeadline,
+      },
+      'Could not approve this request. Please try again.'
+    );
+    const approved: ProjectRequirement = json.pr;
+    onPrUpdated(approved);
+    // The RFQ goes to the chosen vendors now (same email as an admin's own RFQ)
+    const results = await sendRfqEmails(approved, vendors, currentUser);
+    const failed = results.filter((r) => !r.ok);
+    setView('rfqs');
+    setNotice(
+      `${pr.id} approved. RFQ emailed to ${results.length - failed.length} of ${results.length} vendor(s).` +
+        (failed.length ? ` Not sent to: ${failed.map((r) => `${r.vendor.name} (${r.error})`).join(', ')}. Share their quote link from "Add Vendor Quote".` : '')
+    );
   };
 
   const decideApproval = async (pr: ProjectRequirement, kind: 'approve' | 'reject', comment: string) => {
     const json = await postJson(
       '/api/approvals/decide',
-      { prId: pr.id, decision: kind, comment, decidedBy: currentUser.name },
+      { prId: pr.id, decision: kind, comment, decidedBy: currentUser.name, decidedById: currentUser.id },
       'Could not record your decision. Please try again.'
     );
     onPrUpdated(json.pr);
@@ -669,8 +730,18 @@ export default function OrderQueryComparisonCenter({
     );
   };
 
-  // Open RFQs = not yet sent for approval / awarded / closed. Awarded RFQs move to Purchase Orders.
-  const openPrs = useMemo(() => prs.filter((p) => !['Awarded', 'Closed', 'Pending Approval'].includes(p.status)), [prs]);
+  // Open RFQs = approved requests not yet sent for vendor approval / awarded / closed. Awarded RFQs move to Purchase Orders.
+  const openPrs = useMemo(() => prs.filter((p) => !NOT_OPEN.includes(p.status)), [prs]);
+  // Purchase requests from site managers / departments waiting for an admin (and recently rejected ones)
+  const pendingRequests = useMemo(() => prs.filter((p) => p.status === 'Awaiting Admin Approval'), [prs]);
+  const rejectedRequests = useMemo(
+    () =>
+      prs
+        .filter((p) => p.status === 'Request Rejected')
+        .sort((a, b) => String(b.requestApproval?.decidedAt).localeCompare(String(a.requestApproval?.decidedAt)))
+        .slice(0, 15),
+    [prs]
+  );
   const approvalPrs = useMemo(() => prs.filter((p) => p.status === 'Pending Approval'), [prs]);
   const decidedApprovals = useMemo(
     () =>
@@ -702,7 +773,7 @@ export default function OrderQueryComparisonCenter({
   const selectedPr = selectedPrId ? prs.find((p) => p.id === selectedPrId) || null : null;
   // If the selected RFQ gets sent for approval or awarded, leave the detail view
   useEffect(() => {
-    if (selectedPr && ['Awarded', 'Closed', 'Pending Approval'].includes(selectedPr.status)) setSelectedPrId(null);
+    if (selectedPr && NOT_OPEN.includes(selectedPr.status)) setSelectedPrId(null);
   }, [selectedPr]);
 
   const kpiOpenQuotes = openPrs.reduce((s, p) => s + (quotesByPr.get(p.id) || []).filter((q) => q.status !== 'Declined').length, 0);
@@ -722,26 +793,26 @@ export default function OrderQueryComparisonCenter({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Order Queries &amp; Quotes</h1>
             <p className="text-xs text-slate-500">
-              {isApprover
-                ? 'Review the vendors selected by the purchase team and approve or reject them. Approved orders are issued as purchase orders immediately.'
-                : 'Request quotations, compare and negotiate, send for approval, and track purchase orders & invoices.'}
+              {isAdmin
+                ? 'Approve requests from sites and departments, compare and negotiate quotations, award orders and track purchase orders & invoices.'
+                : 'Raise purchase requests (an admin approves them before the RFQ goes to vendors), compare quotations and track purchase orders.'}
             </p>
           </div>
         </div>
-        {!isApprover && (
+        {(
           <button onClick={onOpenNewPR} className="px-4 py-2.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold inline-flex items-center gap-2 cursor-pointer">
-            <Plus size={16} /> Raise New Order Query / PR
+            <Plus size={16} /> {isAdmin ? 'Raise New Order Query / PR' : 'Raise Purchase Request'}
           </button>
         )}
       </div>
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {isApprover ? (
-          <Kpi label="Awaiting Approval" value={approvalPrs.length} hint={approvalPrs.length ? rs(approvalPrs.reduce((s, p) => s + (p.approval?.amount || 0), 0), 0) : 'Nothing waiting'} />
-        ) : (
-          <Kpi label="Open RFQs" value={openPrs.length} hint={approvalPrs.length ? `${approvalPrs.length} awaiting approval` : 'Awaiting quotes / comparison'} />
-        )}
+        <Kpi
+          label="Open RFQs"
+          value={openPrs.length}
+          hint={pendingRequests.length + approvalPrs.length ? `${pendingRequests.length + approvalPrs.length} waiting for admin approval` : 'Awaiting quotes / comparison'}
+        />
         <Kpi label="Quotes Received" value={kpiOpenQuotes} hint="On open RFQs" />
         <Kpi label="Purchase Orders" value={purchaseOrders.length} hint={`${pendingDelivery} awaiting delivery`} />
         <Kpi label="Invoiced" value={rs(invoiced, 0)} hint={unpaidReceipts.length ? `${rs(unpaidTotal, 0)} unpaid (${unpaidReceipts.length} invoice${unpaidReceipts.length === 1 ? '' : 's'})` : 'Against purchase orders'} />
@@ -759,8 +830,9 @@ export default function OrderQueryComparisonCenter({
         <div className="flex items-center gap-1 border-b border-slate-200" role="tablist">
           {(
             [
+              ['requests', `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ''}`],
               ['rfqs', `Open RFQs (${openPrs.length})`],
-              ['approvals', `Approvals${approvalPrs.length ? ` (${approvalPrs.length})` : ''}`],
+              ['approvals', `Vendor Approvals${approvalPrs.length ? ` (${approvalPrs.length})` : ''}`],
               ['pos', `Purchase Orders (${purchaseOrders.length + awardedWithoutPo.length})`],
             ] as const
           ).map(([id, label]) => (
@@ -788,10 +860,19 @@ export default function OrderQueryComparisonCenter({
           benchmark={getMarketBenchmark(selectedPr.materialCode, marketBenchmarks)}
           onBack={() => setSelectedPrId(null)}
           onAddLocalQuote={() => onOpenSubmitQuote(selectedPr)}
-          readOnly={isApprover}
+          readOnly={false}
+          isAdmin={isAdmin}
           vendorPerf={vendorPerf}
           onSendForApproval={(quote) => setApprovalDialog({ pr: selectedPr, quote })}
           onNegotiate={(quote, peers) => setNegotiateDialog({ pr: selectedPr, quote, peers })}
+        />
+      ) : view === 'requests' ? (
+        <RequestsView
+          pending={pendingRequests}
+          rejected={rejectedRequests}
+          vendors={vendors}
+          canDecide={isAdmin}
+          onDecide={(pr, kind) => setRequestDecision({ pr, kind })}
         />
       ) : view === 'approvals' ? (
         <ApprovalsView
@@ -800,7 +881,7 @@ export default function OrderQueryComparisonCenter({
           quotesByPr={quotesByPr}
           benchmarks={marketBenchmarks}
           vendorPerf={vendorPerf}
-          isApprover={isApprover}
+          canDecide={isAdmin}
           onDecide={(pr, kind) => setDecision({ pr, kind })}
         />
       ) : view === 'rfqs' ? (
@@ -1010,9 +1091,7 @@ export default function OrderQueryComparisonCenter({
                             </td>
                             <td className="px-3 py-3"><Pill className={DELIVERY_STYLE[po.deliveryStatus]}>{po.deliveryStatus}</Pill></td>
                             <td className="px-3 py-3">
-                              {isApprover ? (
-                                <span className="text-xs text-slate-500">{po.approvedBy ? `Approved by ${po.approvedBy}` : '—'}</span>
-                              ) : po.deliveryStatus !== 'Received' ? (
+                              {po.deliveryStatus !== 'Received' ? (
                                 <button
                                   onClick={() => setDeliveryPo(po)}
                                   className="px-3 py-1.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
@@ -1088,7 +1167,7 @@ export default function OrderQueryComparisonCenter({
                                           </td>
                                           <td className="py-1.5 pr-3 whitespace-nowrap">
                                             <Pill className={pay.className}>{pay.label}</Pill>
-                                            {r.paymentStatus === 'Unpaid' && !isApprover && (
+                                            {r.paymentStatus === 'Unpaid' && (
                                               <button
                                                 onClick={() => markPaid(po, r)}
                                                 disabled={payingId === r.id}
@@ -1158,8 +1237,10 @@ export default function OrderQueryComparisonCenter({
               setNotice(
                 `${result.receipt?.grnNumber ? `${result.receipt.grnNumber}: ` : ''}accepted ${input.acceptedQty} of ${input.receivedQty} ${deliveryPo.unit} against ${deliveryPo.poNumber} with invoice ${input.invoiceNumber}. ` +
                   (input.receivedQty > input.acceptedQty ? `${round2(input.receivedQty - input.acceptedQty)} ${deliveryPo.unit} rejected - the vendor has been emailed. ` : '') +
-                  (result.stockUpdated
-                    ? `Stock added to ${result.projectName || deliveryPo.projectName}${result.materialCreated ? ' (new catalogue item created)' : ''}, ` +
+                  (result.departmentOrder
+                    ? `Delivered to the ${deliveryPo.projectName} (department purchase - no site stock to update).`
+                    : result.stockUpdated
+                    ?`Stock added to ${result.projectName || deliveryPo.projectName}${result.materialCreated ? ' (new catalogue item created)' : ''}, ` +
                       `project estimation cost ${result.estimationDelta !== undefined ? `${result.estimationDelta >= 0 ? '+' : '-'}${rs(Math.abs(result.estimationDelta), 0)}` : 'updated'}, ` +
                       'bill filed under GST & URD Bills.'
                     : 'Stock could not be updated automatically.') +
@@ -1176,6 +1257,7 @@ export default function OrderQueryComparisonCenter({
         <SendForApprovalDialog
           pr={approvalDialog.pr}
           quote={approvalDialog.quote}
+          isAdmin={isAdmin}
           onClose={() => setApprovalDialog(null)}
           onSubmit={async (note) => {
             await requestApproval(approvalDialog.pr, approvalDialog.quote, note);
@@ -1195,6 +1277,19 @@ export default function OrderQueryComparisonCenter({
           onSubmit={async (rate, note) => {
             await sendOffer(negotiateDialog.pr, negotiateDialog.quote, rate, note);
             setNegotiateDialog(null);
+          }}
+        />
+      )}
+
+      {requestDecision && (
+        <RequestDecisionDialog
+          pr={requestDecision.pr}
+          kind={requestDecision.kind}
+          vendors={vendors}
+          onClose={() => setRequestDecision(null)}
+          onSubmit={async (input) => {
+            await decideRequest(requestDecision.pr, requestDecision.kind, input);
+            setRequestDecision(null);
           }}
         />
       )}
@@ -1284,11 +1379,18 @@ function DialogShell({
 const dialogField =
   'w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30 focus:border-[#23408e]';
 
-function SendForApprovalDialog({ pr, quote, onClose, onSubmit }: { pr: ProjectRequirement; quote: VendorQuotation; onClose: () => void; onSubmit: (note: string) => Promise<void> }) {
+function SendForApprovalDialog({ pr, quote, isAdmin, onClose, onSubmit }: { pr: ProjectRequirement; quote: VendorQuotation; isAdmin: boolean; onClose: () => void; onSubmit: (note: string) => Promise<void> }) {
   const [note, setNote] = useState('');
   const negotiated = quote.negotiation && quote.negotiation.originalRate > quote.quotedRate;
   return (
-    <DialogShell title="Send for approval" subtitle={`${pr.id} • ${pr.materialName}`} onClose={onClose} onSubmit={() => onSubmit(note.trim())} submitLabel="Send for Approval">
+    <DialogShell
+      title={isAdmin ? 'Award and issue purchase order' : 'Send for approval'}
+      subtitle={`${pr.id} • ${pr.materialName}`}
+      onClose={onClose}
+      onSubmit={() => onSubmit(note.trim())}
+      submitLabel={isAdmin ? 'Award & Issue PO' : 'Send for Approval'}
+      submitClass={isAdmin ? 'bg-emerald-600 hover:bg-emerald-700' : undefined}
+    >
       <div className="rounded-xl bg-[#f5f8fd] border border-[#d9e3f5] p-4 text-sm grid grid-cols-2 gap-x-4 gap-y-1">
         <span className="text-slate-500">Vendor</span><span className="text-right font-semibold text-slate-900">{quote.vendorName}</span>
         <span className="text-slate-500">Unit rate</span><span className="text-right font-semibold text-slate-900">{rs(quote.quotedRate)} / {quote.unit}</span>
@@ -1308,8 +1410,206 @@ function SendForApprovalDialog({ pr, quote, onClose, onSubmit }: { pr: ProjectRe
           className={`${dialogField} mt-1`}
         />
       </label>
-      <p className="text-xs text-slate-500">The approver is notified. The purchase order is generated and emailed to the vendor as soon as it is approved.</p>
+      <p className="text-xs text-slate-500">
+        {isAdmin
+          ? 'Admin orders need no approval: the purchase order is generated and emailed to the vendor straight away.'
+          : 'The admins are notified. The purchase order is generated and emailed to the vendor as soon as an admin approves it.'}
+      </p>
     </DialogShell>
+  );
+}
+
+/** Default RFQ deadline for an approved request: the requested one if still in the future, else 3 days from now at 18:00 */
+function defaultDeadline(pr: ProjectRequirement): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const asLocal = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const wanted = pr.quoteDeadline ? new Date(pr.quoteDeadline) : null;
+  if (wanted && wanted.getTime() > Date.now() + 12 * 3600000) return asLocal(wanted);
+  const d = new Date();
+  d.setDate(d.getDate() + 3);
+  d.setHours(18, 0, 0, 0);
+  return asLocal(d);
+}
+
+/** Admin approves a purchase request (choosing the vendors who get the RFQ) or rejects it */
+function RequestDecisionDialog({
+  pr,
+  kind,
+  vendors,
+  onClose,
+  onSubmit,
+}: {
+  pr: ProjectRequirement;
+  kind: 'approve' | 'reject';
+  vendors: Vendor[];
+  onClose: () => void;
+  onSubmit: (input: { comment: string; vendorIds?: string[]; quoteDeadline?: string }) => Promise<void>;
+}) {
+  const [comment, setComment] = useState('');
+  const eligible = useMemo(() => (pr.department ? [] : getVendorsForMaterialCode(pr.materialCode, vendors)), [pr, vendors]);
+  const [showAll, setShowAll] = useState(eligible.length === 0);
+  const list = showAll ? vendors : eligible;
+  const [picked, setPicked] = useState<string[]>(() => {
+    const suggested = (pr.invitedVendorIds || []).filter((id) => vendors.some((v) => v.id === id));
+    return suggested.length ? suggested : eligible.map((v) => v.id);
+  });
+  const [deadline, setDeadline] = useState(() => defaultDeadline(pr));
+  const toggle = (id: string) => setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  return (
+    <DialogShell
+      title={kind === 'approve' ? 'Approve request and send RFQ' : 'Reject request'}
+      subtitle={`${pr.id} • ${pr.materialName} • ${pr.quantity} ${pr.unit} • ${pr.department ? `${pr.department} department` : pr.projectName}`}
+      onClose={onClose}
+      onSubmit={async () => {
+        if (kind === 'reject') {
+          if (!comment.trim()) throw new UserFacingError(`Please give a reason so ${pr.raisedByName} knows why.`);
+          return onSubmit({ comment: comment.trim() });
+        }
+        if (!picked.length) throw new UserFacingError('Please choose at least one vendor to send the quotation request to.');
+        if (!deadline || Number.isNaN(Date.parse(deadline)) || Date.parse(deadline) <= Date.now()) throw new UserFacingError('Please set a quotation deadline in the future.');
+        await onSubmit({ comment: comment.trim(), vendorIds: picked, quoteDeadline: new Date(deadline).toISOString() });
+      }}
+      submitLabel={kind === 'approve' ? `Approve & Send RFQ (${picked.length})` : 'Reject'}
+      submitClass={kind === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}
+    >
+      <div className="rounded-xl bg-[#f5f8fd] border border-[#d9e3f5] p-3 text-sm space-y-1">
+        <p><span className="text-slate-500">Requested by:</span> <strong>{pr.raisedByName}</strong>{pr.department ? ` (${pr.department})` : ''} on {pr.createdAt}</p>
+        <p><span className="text-slate-500">Required by:</span> {fmtDate(pr.requiredDate)} • <span className="text-slate-500">Urgency:</span> {pr.urgency}</p>
+        {pr.targetBudgetRate ? <p><span className="text-slate-500">Estimated:</span> {rs(pr.targetBudgetRate)} / {pr.unit} (about {rs(pr.targetBudgetRate * pr.quantity, 0)})</p> : null}
+        {pr.purpose && <p><span className="text-slate-500">Purpose:</span> {pr.purpose}</p>}
+        {pr.specifications && <p><span className="text-slate-500">Specifications:</span> {pr.specifications}</p>}
+      </div>
+      {kind === 'approve' && (
+        <>
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-slate-700">Send the RFQ to *</span>
+              {eligible.length > 0 && (
+                <button type="button" onClick={() => setShowAll((s) => !s)} className="text-xs font-semibold text-[#23408e] hover:underline cursor-pointer">
+                  {showAll ? `Only vendors for code #${pr.materialCode}` : 'Show all vendors'}
+                </button>
+              )}
+            </div>
+            {list.length === 0 ? (
+              <p className="mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                No vendors are registered yet. Add the vendor under Procurements → Bulk upload / vendor registry first, then approve.
+              </p>
+            ) : (
+              <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100">
+                {list.map((v) => (
+                  <label key={v.id} className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                    <input type="checkbox" checked={picked.includes(v.id)} onChange={() => toggle(v.id)} className="accent-[#23408e]" />
+                    <span className="flex-1 text-slate-900">{v.name}</span>
+                    <span className="text-xs text-slate-500">{v.email || 'no email'}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <label className="block text-sm font-medium text-slate-700">
+            Quotation deadline *
+            <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={`${dialogField} mt-1`} />
+          </label>
+        </>
+      )}
+      <label className="block text-sm font-medium text-slate-700">
+        {kind === 'approve' ? 'Comment (optional)' : 'Reason for rejection *'}
+        <textarea id="request-decision-comment" value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} rows={2} className={`${dialogField} mt-1`} />
+      </label>
+      <p className="text-xs text-slate-500">
+        {kind === 'approve'
+          ? 'Each selected vendor gets the RFQ email with their own quotation link. The requester is emailed that it was approved.'
+          : 'The requester is emailed with your reason. No RFQ is sent.'}
+      </p>
+    </DialogShell>
+  );
+}
+
+/** Purchase requests from site managers / departments waiting for an admin */
+function RequestsView({
+  pending,
+  rejected,
+  vendors,
+  canDecide,
+  onDecide,
+}: {
+  pending: ProjectRequirement[];
+  rejected: ProjectRequirement[];
+  vendors: Vendor[];
+  canDecide: boolean;
+  onDecide: (pr: ProjectRequirement, kind: 'approve' | 'reject') => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-slate-500">
+        Orders raised by site managers and department staff wait here until either admin approves them. Admins' own orders go to vendors straight away.
+      </p>
+      {pending.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">No purchase requests are waiting for approval.</div>
+      ) : (
+        pending.map((pr) => {
+          const at = pr.requestApproval?.requestedAt;
+          const waiting = at ? Math.max(0, Math.round((Date.now() - Date.parse(at)) / 86400000)) : 0;
+          const suggested = vendors.filter((v) => (pr.invitedVendorIds || []).includes(v.id)).map((v) => v.name);
+          return (
+            <div key={pr.id} className="bg-white rounded-xl border border-amber-300 shadow-sm overflow-hidden">
+              <div className="px-5 py-3 bg-amber-50 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs text-amber-800 font-medium">
+                    {pr.id} • {pr.department ? `${pr.department} department` : pr.projectName} • by {pr.raisedByName} {waiting ? `${waiting} day${waiting === 1 ? '' : 's'} ago` : 'today'}
+                  </p>
+                  <h3 className="text-base font-bold text-slate-900">{pr.materialName} — {pr.quantity} {pr.unit}</h3>
+                </div>
+                {canDecide ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => onDecide(pr, 'reject')} className="px-3.5 py-2 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 text-sm font-semibold cursor-pointer">Reject</button>
+                    <button onClick={() => onDecide(pr, 'approve')} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer">
+                      <CheckCircle2 size={15} /> Approve &amp; Send RFQ
+                    </button>
+                  </div>
+                ) : (
+                  <Pill className="bg-amber-100 text-amber-900 border-amber-300">Waiting for an admin</Pill>
+                )}
+              </div>
+              <div className="px-5 py-3 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div><dt className="text-xs text-slate-500">Required by</dt><dd className="font-semibold text-slate-900">{fmtDate(pr.requiredDate)}</dd></div>
+                <div><dt className="text-xs text-slate-500">Urgency</dt><dd className="font-semibold text-slate-900">{pr.urgency}</dd></div>
+                <div><dt className="text-xs text-slate-500">Estimated value</dt><dd className="font-semibold text-slate-900">{pr.targetBudgetRate ? rs(pr.targetBudgetRate * pr.quantity, 0) : '—'}</dd></div>
+                <div><dt className="text-xs text-slate-500">Suggested vendors</dt><dd className="text-slate-900">{suggested.length ? suggested.join(', ') : '—'}</dd></div>
+              </div>
+              {(pr.purpose || pr.specifications) && (
+                <div className="px-5 pb-3 text-sm text-slate-700 space-y-0.5">
+                  {pr.purpose && <p><span className="text-slate-500">Purpose: </span>{pr.purpose}</p>}
+                  {pr.specifications && <p><span className="text-slate-500">Specifications: </span>{pr.specifications}</p>}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {rejected.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <h3 className="px-5 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">Recently rejected requests</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {rejected.map((pr) => (
+                  <tr key={pr.id} className="border-b border-slate-100 last:border-0">
+                    <td className="px-5 py-2 font-mono text-xs text-slate-600">{pr.id}</td>
+                    <td className="px-3 py-2 text-slate-900">{pr.materialName}</td>
+                    <td className="px-3 py-2 text-slate-700">{pr.raisedByName}{pr.department ? ` (${pr.department})` : ''}</td>
+                    <td className="px-3 py-2 text-xs text-slate-500">
+                      {pr.requestApproval?.decidedBy} • {fmtDate(pr.requestApproval?.decidedAt)}{pr.requestApproval?.comment ? ` • "${pr.requestApproval.comment}"` : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1490,7 +1790,7 @@ function ApprovalsView({
   quotesByPr,
   benchmarks,
   vendorPerf,
-  isApprover,
+  canDecide,
   onDecide,
 }: {
   pending: ProjectRequirement[];
@@ -1498,7 +1798,7 @@ function ApprovalsView({
   quotesByPr: Map<string, VendorQuotation[]>;
   benchmarks: MarketPriceBenchmark[];
   vendorPerf: Map<string, VendorPerformance>;
-  isApprover: boolean;
+  canDecide: boolean;
   onDecide: (pr: ProjectRequirement, kind: 'approve' | 'reject') => void;
 }) {
   return (
@@ -1522,7 +1822,7 @@ function ApprovalsView({
                   <p className="text-xs text-amber-800 font-medium">{pr.id} • {pr.projectName} • requested by {a.requestedBy} {waiting ? `${waiting} day${waiting === 1 ? '' : 's'} ago` : 'today'}</p>
                   <h3 className="text-base font-bold text-slate-900">{pr.materialName} — {pr.quantity} {pr.unit}</h3>
                 </div>
-                {isApprover ? (
+                {canDecide ? (
                   <div className="flex gap-2">
                     <button onClick={() => onDecide(pr, 'reject')} className="px-3.5 py-2 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 text-sm font-semibold cursor-pointer">Reject</button>
                     <button onClick={() => onDecide(pr, 'approve')} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer">
@@ -1530,7 +1830,7 @@ function ApprovalsView({
                     </button>
                   </div>
                 ) : (
-                  <Pill className="bg-amber-100 text-amber-900 border-amber-300">Waiting for approver</Pill>
+                  <Pill className="bg-amber-100 text-amber-900 border-amber-300">Waiting for an admin</Pill>
                 )}
               </div>
               <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
@@ -1624,7 +1924,9 @@ function RfqDetail({
   vendorPerf,
   onSendForApproval,
   onNegotiate,
+  isAdmin,
 }: {
+  isAdmin: boolean;
   pr: ProjectRequirement;
   quotes: VendorQuotation[];
   vendors: Vendor[];
@@ -1799,12 +2101,18 @@ function RfqDetail({
                     <button
                       onClick={() => onSendForApproval(quote)}
                       disabled={quote.negotiation?.status === 'Offered'}
-                      title={quote.negotiation?.status === 'Offered' ? 'Wait for the vendor to reply to your counter-offer first' : 'Send this vendor to the approver'}
+                      title={
+                        quote.negotiation?.status === 'Offered'
+                          ? 'Wait for the vendor to reply to your counter-offer first'
+                          : isAdmin
+                            ? 'Award this vendor: the purchase order is generated and emailed straight away'
+                            : 'Send this vendor to the admins for approval'
+                      }
                       className={`py-2 rounded-lg text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                         isTop ? 'bg-[#23408e] hover:bg-[#1b3170] text-white' : 'bg-white border border-[#23408e] text-[#23408e] hover:bg-[#f5f8fd]'
                       }`}
                     >
-                      <CheckCircle2 size={15} /> Send for Approval
+                      <CheckCircle2 size={15} /> {isAdmin ? 'Award & Issue PO' : 'Send for Approval'}
                     </button>
                   </div>
                 )}

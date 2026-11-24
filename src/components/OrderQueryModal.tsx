@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Material, Project, User, Vendor, MarketPriceBenchmark, ProjectRequirement } from '../types';
 import { resolveMaterialCode, resolveMaterialGroup } from '../lib/materialCodes';
-import { getVendorsForMaterialCode, getMarketBenchmark, EVALUATION_CRITERIA_TEXT } from '../lib/vendorComparison';
-import { sendEmailNotification } from '../services/emailService';
-import { safeText } from '../lib/userError';
+import { getVendorsForMaterialCode, getMarketBenchmark } from '../lib/vendorComparison';
 import { useVendorPerformance, displayRating } from '../lib/vendorPerformance';
-import { withVendorQuoteTokens, buildVendorQuoteUrl } from '../lib/vendorQuoteLinks';
+import { withVendorQuoteTokens } from '../lib/vendorQuoteLinks';
+import { sendRfqEmails, submitRequestForApproval } from '../lib/rfqDispatch';
 import {
   X,
   ShoppingCart,
@@ -252,10 +251,13 @@ export default function OrderQueryModal({
 
   if (!isOpen) return null;
 
+  // Admin orders go straight to the vendors; site managers' orders wait for an admin's approval first
+  const needsApproval = currentUser.role !== 'admin';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!quantity || quantity <= 0) return;
-    if (selectedVendorIds.length === 0) {
+    if (!needsApproval && selectedVendorIds.length === 0) {
       alert('Please select at least one vendor to send the enquiry to.');
       return;
     }
@@ -286,7 +288,7 @@ export default function OrderQueryModal({
       ...(receivingHours.trim() ? { receivingHours: receivingHours.trim() } : {}),
       ...(unloadingConstraints.trim() ? { unloadingConstraints: unloadingConstraints.trim() } : {}),
       ...(quoteDeadline && !Number.isNaN(Date.parse(quoteDeadline)) ? { quoteDeadline: new Date(quoteDeadline).toISOString() } : {}),
-      status: 'Enquiry Sent',
+      status: needsApproval ? 'Awaiting Admin Approval' : 'Enquiry Sent',
       raisedByUserId: currentUser.id,
       raisedByName: currentUser.name,
       createdAt: new Date().toLocaleString('en-US', {
@@ -297,176 +299,43 @@ export default function OrderQueryModal({
         minute: '2-digit',
         hour12: true,
       }),
+      // For a request waiting for approval these are only the suggested vendors; the admin picks the final list
       invitedVendorIds: selectedVendorIds,
-      enquiryDispatchedAt: new Date().toLocaleString(),
     };
+
+    // Site manager: save the request and tell the admins. No RFQ goes to vendors until an admin approves it.
+    if (needsApproval) {
+      const request: ProjectRequirement = {
+        ...draftPR,
+        requestApproval: {
+          status: 'Pending',
+          requestedBy: currentUser.name,
+          requestedById: currentUser.id,
+          requestedByRole: currentUser.role,
+          requestedAt: new Date().toISOString(),
+        },
+      };
+      onCreatePR(request);
+      await submitRequestForApproval(request, currentUser);
+      setIsSending(false);
+      setSuccessToast(`Request ${prNumber} sent to the admins for approval. The RFQ goes to vendors once it is approved.`);
+      setTimeout(() => {
+        setSuccessToast(null);
+        onClose();
+      }, 1800);
+      return;
+    }
+
     // Every invited vendor gets a unique secret link to submit their quotation directly into the system
-    const newPR = withVendorQuoteTokens(draftPR, selectedVendorIds);
-
-    // Automated Email Dispatch (PRD 3.4)
-    // Send the RFQ email to each chosen vendor at that vendor's own registered email address
-    const invitedVendors = vendors.filter((v) => selectedVendorIds.includes(v.id));
-
-    // Each vendor's personal quotation link
-    const quoteUrlFor = (vendorId: string) => buildVendorQuoteUrl(newPR.id, vendorId, newPR.vendorQuoteTokens![vendorId]);
-
-    const emailSubject = `[RFQ Enquiry ${prToken}] Formal Material Requirement: ${newPR.materialName} (Code #${matCode}) - ${newPR.projectName}`;
-    const buildEmailBody = (vendorName: string, portalUrl: string) => `
-Dear ${vendorName} Team,
-
-We are pleased to issue this formal Request for Quotation (RFQ) for our upcoming project requirement:
-
-==================================================
-PROJECT REQUIREMENT (PR) SPECIFICATIONS & DETAILS
-==================================================
-• PR Number: ${newPR.id}
-• RFQ Token ID: ${prToken}
-• Project Site: ${newPR.projectName}
-• Delivery Location & Unloading Gate: ${newPR.deliveryAddress}
-• Standard Material Code: #${matCode} (${newPR.materialGroup})
-• Material Description: ${newPR.materialName}
-• Material Category: ${newPR.category}
-• Required Quantity: ${newPR.quantity} ${newPR.unit}
-• Target Required Delivery Date: ${newPR.requiredDate}
-• Procurement Urgency Level: ${newPR.urgency}
-• Target Budget Guideline: Rs. ${newPR.targetBudgetRate ? newPR.targetBudgetRate.toLocaleString('en-IN') : 'Competitive'} per ${newPR.unit}
-
---------------------------------------------------
-TECHNICAL & QUALITY SPECIFICATIONS:
---------------------------------------------------
-"${newPR.specifications}"
-
---------------------------------------------------
-SPECIAL SITE INSTRUCTIONS & OFFLOADING:
---------------------------------------------------
-"${newPR.specialInstructions || 'Direct offloading at site yard with manufacturer test certificate (MTC).'}"
-
-==================================================
-SUBMIT YOUR COMMERCIAL QUOTATION
-==================================================
-Please open your secure quotation link below to submit your commercial quotation (Unit Rate, Delivery Lead Days, Credit Period, Freight & Tax terms). You can reopen the same link to revise your quote until the enquiry is awarded:
-
-${portalUrl}
-
-This link is unique to your company. Please do not forward it.
-
-Evaluation Criteria:
-Quotes will be compared and ranked based on:
-1. Quoted Unit Rates (40% Weightage)
-2. Delivery Timeline (20% Weightage)
-3. Quality Certification & IS Conformance (20% Weightage)
-4. Credit Period (45d / 30d / 15d) (20% Weightage)
-
-Issued by:
-${currentUser.name} (${currentUser.title || 'Site Manager'})
-PRAVAH Construction Inventory & Procurement Platform
-Contact Email: ganeshnagargoje1008@gmail.com
-    `;
-
-    // Structured RFQ email (rendered by the server's standard email layout; the link is a button, not shown as text)
-    const buildRfqEmail = (vendorName: string, portalUrl: string) => ({
-      heading: `Request for Quotation: ${newPR.materialName}`,
-      preheader: `${newPR.id} - ${newPR.quantity} ${newPR.unit} required by ${newPR.requiredDate} for ${newPR.projectName}`,
-      greeting: `Dear ${vendorName} Team,`,
-      paragraphs: [
-        'We invite you to submit your quotation for the project requirement below. Please review the details and submit your rates, delivery timeline and commercial terms using the button below.',
-      ],
-      details: [
-        { label: 'PR Number', value: newPR.id },
-        { label: 'RFQ Reference', value: prToken },
-        { label: 'Project Site', value: newPR.projectName },
-        { label: 'Delivery Address', value: newPR.deliveryAddress },
-        { label: 'Material', value: newPR.materialName },
-        { label: 'Material Code', value: `#${matCode}${newPR.materialGroup ? ` (${newPR.materialGroup})` : ''}` },
-        { label: 'Category', value: newPR.category },
-        { label: 'Required Quantity', value: `${newPR.quantity} ${newPR.unit}` },
-        { label: 'Required By', value: newPR.requiredDate },
-        ...(newPR.receivingHours ? [{ label: 'Receiving Hours', value: newPR.receivingHours }] : []),
-        ...(newPR.unloadingConstraints ? [{ label: 'Unloading Constraints', value: newPR.unloadingConstraints }] : []),
-        {
-          label: 'Quotation Deadline',
-          value: newPR.quoteDeadline
-            ? new Date(newPR.quoteDeadline).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
-            : 'At the earliest',
-        },
-        { label: 'Urgency', value: newPR.urgency },
-        {
-          label: 'Target Budget',
-          value: newPR.targetBudgetRate
-            ? `Rs. ${newPR.targetBudgetRate.toLocaleString('en-IN')} per ${newPR.unit}`
-            : 'Competitive',
-        },
-      ],
-      sections: [
-        { title: 'Technical & Quality Specifications', text: newPR.specifications },
-        {
-          title: 'Site Instructions',
-          text: newPR.specialInstructions || 'Direct offloading at site yard with manufacturer test certificate (MTC).',
-        },
-        {
-          title: 'Evaluation Criteria',
-          text: `Quotations are ranked on: ${EVALUATION_CRITERIA_TEXT.replace(/ • /g, ', ')}.`,
-        },
-        {
-          title: 'How to Submit',
-          text: 'Use the button below to open your secure supplier page. You can type or paste your quotation, or upload it as a PDF, Word document, image or Excel file, and then confirm the 10 key figures (unit rate, quantity, GST, freight, loading, total price, delivery, validity, payment terms and warranty).',
-        },
-      ],
-      cta: {
-        label: 'Submit Quotation',
-        url: portalUrl,
-        note: 'This link is unique to your company. You can use it again to revise your quotation until the enquiry is awarded. Please do not forward this email.',
-      },
-      closing: [
-        'Regards,',
-        currentUser.name,
-        currentUser.title || 'Procurement Team',
-        'For questions, contact ganeshnagargoje1008@gmail.com',
-      ],
-    });
+    const newPR = withVendorQuoteTokens({ ...draftPR, enquiryDispatchedAt: new Date().toLocaleString() }, selectedVendorIds);
 
     // Save the PR (with vendor tokens) first so the links work as soon as the emails arrive
     onCreatePR(newPR);
 
-    // Dispatch a personal email (with that vendor's own quotation link) to every invited vendor.
-    // Sent one after another to stay within the email provider's rate limit.
-    const results: { vendor: Vendor; ok: boolean; error: string }[] = [];
-    for (const vendor of invitedVendors) {
-      const email = (vendor.email || '').trim();
-      if (!email) {
-        results.push({ vendor, ok: false, error: 'no email address on file' });
-        continue;
-      }
-      try {
-        const res = await sendEmailNotification({
-          to: email,
-          subject: emailSubject,
-          body: buildEmailBody(vendor.name, quoteUrlFor(vendor.id)),
-          fromName: `${currentUser.name} (PRAVAH Procurement)`,
-          type: 'Vendor RFQ Enquiry',
-          email: buildRfqEmail(vendor.name, quoteUrlFor(vendor.id)),
-        });
-        results.push({ vendor, ok: Boolean(res?.success), error: res?.success ? '' : safeText(res?.error, 'the email could not be delivered') });
-      } catch {
-        results.push({ vendor, ok: false, error: 'the email could not be sent (connection problem)' });
-      }
-    }
-
+    // Personal email (with that vendor's own quotation link) to every invited vendor
+    const results = await sendRfqEmails(newPR, vendors, currentUser);
     const sent = results.filter((r) => r.ok);
     const failed = results.filter((r) => !r.ok);
-
-    // In-app notification for the team (best effort)
-    fetch('/api/notifications', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'rfq-sent',
-        prId: prNumber,
-        projectId: newPR.projectId,
-        title: `RFQ sent: ${newPR.materialName}`,
-        message: `${prNumber} (${newPR.quantity} ${newPR.unit}) emailed to ${sent.length} of ${results.length} vendor(s) by ${currentUser.name}.`,
-      }),
-    }).catch(() => undefined);
 
     setIsSending(false);
     setSuccessToast(
@@ -1046,7 +915,7 @@ Contact Email: ganeshnagargoje1008@gmail.com
           {/* Footer Actions */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
             <div className="text-sm text-slate-600">
-              <strong className="text-slate-900 font-semibold">{selectedVendorIds.length}</strong> vendor{selectedVendorIds.length === 1 ? '' : 's'} selected to receive the RFQ email and quote link.
+              {needsApproval ? (<><strong className="text-slate-900 font-semibold">Needs admin approval:</strong> the {selectedVendorIds.length} selected vendor{selectedVendorIds.length === 1 ? ' is' : 's are'} suggested; the RFQ is emailed once an admin approves.</>) : (<><strong className="text-slate-900 font-semibold">{selectedVendorIds.length}</strong> vendor{selectedVendorIds.length === 1 ? '' : 's'} selected to receive the RFQ email and quote link.</>)}
             </div>
 
             <div className="flex items-center gap-2.5 w-full sm:w-auto">
@@ -1059,17 +928,17 @@ Contact Email: ganeshnagargoje1008@gmail.com
               </button>
               <button
                 type="submit"
-                disabled={isSending || selectedVendorIds.length === 0}
+                disabled={isSending || (!needsApproval && selectedVendorIds.length === 0)}
                 className="flex-1 sm:flex-none px-5 py-2.5 bg-[#23408e] hover:bg-[#1b3170] text-white font-semibold text-sm rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSending ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Dispatching RFQs...
+                    {needsApproval ? 'Sending for approval...' : 'Dispatching RFQs...'}
                   </>
                 ) : (
                   <>
-                    <Send size={14} /> Dispatch RFQ & Create PR
+                    <Send size={14} /> {needsApproval ? 'Send for Admin Approval' : 'Dispatch RFQ & Create PR'}
                   </>
                 )}
               </button>

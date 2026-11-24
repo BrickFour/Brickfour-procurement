@@ -3,8 +3,14 @@ export interface User {
   name: string;
   email: string;
   password?: string;
-  /** admin = purchase team; site_manager = one project; approver = approves vendor awards before the PO is issued */
-  role: 'admin' | 'site_manager' | 'approver';
+  /**
+   * admin = purchase team (orders go out without approval, and they approve everyone else's);
+   * site_manager = one project; department = staff of a department (HR, Sales, IT, Accounts) who raise purchase requests.
+   * Orders raised by site managers and department staff need an admin's approval.
+   */
+  role: 'admin' | 'site_manager' | 'department';
+  /** Department of a 'department' user, e.g. "HR" */
+  department?: string;
   phone?: string;
   title?: string; // e.g. "Lead Site Engineer", "Senior Project Manager"
   assignedProjectId?: string;
@@ -281,9 +287,32 @@ export interface FutureRatePredictionResult {
   marketRateToday?: number;
 }
 
-export type PRStatus = 'Draft' | 'Enquiry Sent' | 'Quotes Received' | 'Under Comparison' | 'Shortlisted' | 'Pending Approval' | 'Awarded' | 'Closed';
+export type PRStatus =
+  | 'Awaiting Admin Approval' // raised by a site manager / department: no RFQ is sent until an admin approves it
+  | 'Request Rejected'
+  | 'Draft'
+  | 'Enquiry Sent'
+  | 'Quotes Received'
+  | 'Under Comparison'
+  | 'Shortlisted'
+  | 'Pending Approval' // vendor selected by a site manager: waiting for an admin
+  | 'Awarded'
+  | 'Closed';
 
-/** Approval of the selected vendor by the approver (required before the PO is issued) */
+/** Admin approval of a purchase request raised by a site manager or department (before any RFQ is sent) */
+export interface PRRequestApproval {
+  status: 'Pending' | 'Approved' | 'Rejected';
+  requestedBy: string;
+  requestedById: string;
+  requestedByRole: User['role'];
+  department?: string;
+  requestedAt: string; // ISO
+  decidedBy?: string;
+  decidedAt?: string; // ISO
+  comment?: string; // reason (required on rejection)
+}
+
+/** Approval of the selected vendor by an admin (needed when a non-admin selects the vendor; admins' own awards are approved automatically) */
 export interface PRApproval {
   status: 'Pending' | 'Approved' | 'Rejected';
   vendorId: string;
@@ -296,7 +325,7 @@ export interface PRApproval {
   note?: string; // why this vendor was selected
   decidedBy?: string;
   decidedAt?: string; // ISO
-  comment?: string; // approver's comment (required on rejection)
+  comment?: string; // admin's comment (required on rejection)
   history: { action: 'requested' | 'approved' | 'rejected'; by: string; at: string; vendorName: string; amount: number; comment?: string }[];
 }
 
@@ -358,7 +387,12 @@ export interface ProjectRequirement {
   unloadingConstraints?: string; // e.g. "Max 10-wheeler truck; no entry 22:00-06:00"
   quoteDeadline?: string; // ISO date-time after which vendors can no longer submit quotes
   purchaseOrder?: PurchaseOrderRef; // PO issued after the PR was awarded
-  approval?: PRApproval; // vendor award waiting for / decided by the approver
+  approval?: PRApproval; // vendor award waiting for / decided by an admin
+  requestApproval?: PRRequestApproval; // purchase request by a site manager / department, approved by an admin
+  /** Department purchase request (not for a project site), e.g. "HR" */
+  department?: string;
+  /** Why the item is needed (department requests) */
+  purpose?: string;
 }
 
 /** A delivery received against a PO, with the vendor's invoice (amount calculated from the PO terms) */
@@ -452,12 +486,15 @@ export interface AppNotification {
     | 'negotiation-response'
     | 'delivery-due'
     | 'delivery-overdue'
-    | 'material-rejected';
+    | 'material-rejected'
+    | 'request-submitted'
+    | 'request-approved'
+    | 'request-rejected';
   title: string;
   message: string;
   severity: 'info' | 'success' | 'warning' | 'danger';
   projectId?: string;
-  link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals'; prId?: string; poNumber?: string; queryId?: string };
+  link?: { view: 'rfqs' | 'pos' | 'queries' | 'approvals' | 'requests'; prId?: string; poNumber?: string; queryId?: string };
   createdAt: string;
   read: boolean;
 }

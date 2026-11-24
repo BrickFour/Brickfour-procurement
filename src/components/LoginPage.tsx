@@ -43,9 +43,9 @@ export default function LoginPage({
       assignedProjectId: p.id,
     };
 
-  // Quick Access: one-click sign in for the approver and each project's site manager (admins always sign in with email + password)
+  // Quick Access: one-click sign in for each project's site manager (admins and department staff always sign in with email + password)
   const smAccounts = projects.map((p) => ({ project: p, user: managerForProject(p) }));
-  const approverAccount = users.find((u) => u.role === 'approver');
+
 
   // Handle Login Attempt: exact email + exact password only
   const handleLoginSubmit = (e: FormEvent) => {
@@ -60,7 +60,7 @@ export default function LoginPage({
       return;
     }
 
-    // 1. Registered users (admins and site managers)
+    // 1. Registered users (admins, site managers and department staff)
     const matchedUser = users.find((u) => (u.email || '').trim().toLowerCase() === rawEmail);
     if (matchedUser) {
       if (matchedUser.password && matchedUser.password === pass) {
@@ -203,7 +203,7 @@ export default function LoginPage({
           </form>
 
           {/* Quick Access (1-Click Instant Login: each project's Site Manager) */}
-          {(smAccounts.length > 0 || approverAccount) && (
+          {smAccounts.length > 0 && (
           <div className="pt-5 mt-5 border-t border-slate-200 space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-black text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
@@ -213,34 +213,6 @@ export default function LoginPage({
             </div>
 
             <div className="space-y-2">
-              {/* Approver */}
-              {approverAccount && (
-                <button
-                  type="button"
-                  id="quick-access-approver"
-                  onClick={() => handleDirectQuickLogin(approverAccount)}
-                  className="w-full p-2.5 bg-slate-50 hover:bg-indigo-50/40 border border-slate-200 hover:border-indigo-300 rounded-xl flex items-center justify-between text-left cursor-pointer transition-all group"
-                  title="Click to log in immediately as the Approver"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-950 to-indigo-600 text-white text-xs font-black flex items-center justify-center shrink-0">
-                      ✔
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-slate-900 group-hover:text-indigo-600 text-xs transition-colors">{approverAccount.name}</span>
-                        <span className="text-[9px] bg-indigo-100 text-indigo-900 font-extrabold px-1.5 py-0.5 rounded border border-indigo-200">Approver</span>
-                      </div>
-                      <span className="text-[10px] text-slate-500">Approves vendor selection before the PO is issued</span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] bg-white group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white font-extrabold px-2.5 py-1.5 rounded-lg border border-indigo-200 group-hover:border-transparent transition-all flex items-center gap-1">
-                    <span>Sign In</span>
-                    <ArrowRight size={11} />
-                  </span>
-                </button>
-              )}
-
               {/* One Site Manager button per project */}
               {smAccounts.map((sm, index) => (
                 <button

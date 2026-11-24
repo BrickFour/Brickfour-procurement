@@ -37,6 +37,8 @@ import FloatingChatbot from './components/FloatingChatbot';
 import { loadAppStateFromMongo, syncCollection, fetchServerUpdates, mergeServerDocs } from './services/mongoDataService';
 const brandLogo = '/brickfour-logo.jpeg';
 import ReportsCenter from './components/ReportsCenter';
+import DepartmentRequests from './components/DepartmentRequests';
+import { departmentProjectId, isDepartmentProjectId } from './lib/rfqDispatch';
 import {
   ClipboardList,
   BookOpen,
@@ -60,8 +62,6 @@ const SESSION_KEY = 'builder_logged_in';
 const TAB_KEY = 'builder_active_tab';
 const APP_TABS = ['catalog', 'order-queries', 'procurement', 'transfer', 'gst-urd', 'codes', 'ledger', 'analytics', 'queries', 'reports', 'admin'] as const;
 type AppTab = (typeof APP_TABS)[number];
-/** The approver works only with approvals (Order Queries & Quotes) and reports */
-const APPROVER_TABS: AppTab[] = ['order-queries', 'reports'];
 
 export default function App() {
   // Theme state is strictly set to light theme as requested
@@ -164,7 +164,7 @@ export default function App() {
   const registerNotificationsRefresh = useCallback((fn: () => void) => {
     notificationsRefresh.current = fn;
   }, []);
-  const [orderFocus, setOrderFocus] = useState<{ view: 'rfqs' | 'pos' | 'approvals'; prId?: string; poNumber?: string; nonce: number } | null>(null);
+  const [orderFocus, setOrderFocus] = useState<{ view: 'rfqs' | 'pos' | 'approvals' | 'requests'; prId?: string; poNumber?: string; nonce: number } | null>(null);
 
   const [awardToast, setAwardToast] = useState<{
     vendorName: string;
@@ -276,12 +276,12 @@ export default function App() {
     }
   }, [activeTab]);
 
-  // The approver only has the approvals and reports views; site managers have no reports view
-  const isApprover = currentUser?.role === 'approver';
+  // Department staff only raise and follow their purchase requests; reports are for admins only
+  const isDepartment = currentUser?.role === 'department';
   useEffect(() => {
-    if (isApprover && !APPROVER_TABS.includes(activeTab)) setActiveTab('order-queries');
-    if (currentUser?.role === 'site_manager' && activeTab === 'reports') setActiveTab('catalog');
-  }, [isApprover, currentUser?.role, activeTab]);
+    if (isDepartment && activeTab !== 'order-queries') setActiveTab('order-queries');
+    if (currentUser?.role !== 'admin' && (activeTab === 'reports' || activeTab === 'admin')) setActiveTab('catalog');
+  }, [isDepartment, currentUser?.role, activeTab]);
 
   // Pick up new vendor quotes as soon as the procurement view is opened
   useEffect(() => {
@@ -316,7 +316,7 @@ export default function App() {
 
   /**
    * A requirement was changed on the server (sent for approval, approved -> PO issued, or rejected): use the server's copy.
-   * Vendors are awarded only through the approver; the server issues the PO when the award is approved.
+   * An admin's award is approved at once; anyone else's waits for an admin. The server issues the PO on approval.
    */
   const handlePrUpdated = (updated: ProjectRequirement) => {
     if (!updated?.id) return;
@@ -463,6 +463,13 @@ export default function App() {
           date: r.receivedOn,
           verification,
         });
+      } else if (projectId && isDepartmentProjectId(projectId)) {
+        // Department purchase: delivered to the office, not to a site's stock
+        if (json.purchaseOrder?.deliveryStatus === 'Received') {
+          setPrs((prev) => prev.map((p) => (p.id === po.prId && p.status === 'Awarded' ? { ...p, status: 'Closed' } : p)));
+        }
+        notificationsRefresh.current?.();
+        return { ok: true, receipt: r, stockUpdated: false, departmentOrder: true, projectName };
       } else if (projectId) {
         // Not in this project's catalogue yet: create it with the delivered stock
         const pr = prs.find((p) => p.id === po.prId);
@@ -577,8 +584,8 @@ export default function App() {
       return projects;
     }
 
-    if (currentUser.role === 'admin' || currentUser.role === 'approver') {
-      // Administrators and the approver see ALL projects across the platform
+    if (currentUser.role === 'admin') {
+      // Administrators see ALL projects across the platform
       return projects;
     }
 
@@ -1448,8 +1455,9 @@ export default function App() {
           if (user.assignedProjectId) {
             setSelectedProjectId(user.assignedProjectId);
           }
-          setActiveTab(user.role === 'approver' ? 'order-queries' : 'catalog');
-          if (user.role === 'approver') setOrderFocus({ view: 'approvals', nonce: Date.now() });
+          setActiveTab(user.role === 'department' ? 'order-queries' : 'catalog');
+          // Admins land on the requests waiting for their approval when they open Order Queries
+          if (user.role === 'admin' && prs.some((p) => p.status === 'Awaiting Admin Approval')) setOrderFocus({ view: 'requests', nonce: Date.now() });
           setIsLoggedIn(true);
         }}
         onRegisterAdmin={(newAdminData) => {
@@ -1488,7 +1496,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <NotificationCenter
               currentUser={currentUser}
-              projectId={currentUser.role === 'site_manager' ? currentUser.assignedProjectId : undefined}
+              projectId={currentUser.role === 'site_manager' ? currentUser.assignedProjectId : currentUser.role === 'department' ? departmentProjectId(currentUser.department || 'General') : undefined}
               registerRefresh={registerNotificationsRefresh}
               onOpen={(link) => {
                 if (link.view === 'queries') {
@@ -1497,6 +1505,7 @@ export default function App() {
                   return;
                 }
                 setActiveTab('order-queries');
+                if (isDepartment) return;
                 setOrderFocus({ ...link, nonce: Date.now() });
                 if (link.view === 'pos') setPoRefreshKey((k) => k + 1);
               }}
@@ -1511,10 +1520,10 @@ export default function App() {
               </div>
               <div className="hidden sm:flex items-center gap-2 leading-tight">
                 <span className="text-sm font-semibold text-slate-900">
-                  {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'approver' ? 'Approver' : 'Site Manager')}
+                  {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? 'Department' : 'Site Manager')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
-                  {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'approver' ? 'Approver' : 'Site Manager'}
+                  {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? ` Dept` : 'Site Manager'}
                 </span>
               </div>
             </div>
@@ -1536,8 +1545,8 @@ export default function App() {
       {/* Main Core Dashboard Stage */}
       <main className="w-full max-w-[1750px] mx-auto px-4 sm:px-6 lg:px-8 mt-6 space-y-6">
         
-        {/* Project Selector Zone (not for the approver, who sees all projects) */}
-        {!isApprover && (
+        {/* Project Selector Zone (not for department staff, who have no project site) */}
+        {!isDepartment && (
         <>
         <ProjectSelector
           projects={userVisibleProjects}
@@ -1568,7 +1577,7 @@ export default function App() {
 
         {/* Modular Navigation Tabs with indicators */}
         <div className="flex gap-1 border-b border-slate-200 mt-2 overflow-x-auto" id="navigation-tabs">
-          {!isApprover && (
+          {!isDepartment && (
           <button
             id="tab-catalog"
             onClick={() => {
@@ -1600,15 +1609,20 @@ export default function App() {
             }`}
           >
             <ShoppingCart size={14} />
-            Order Queries & Quotes ({prs.length})
-            {prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed').length > 0 && (
+            {isDepartment ? 'Purchase Requests' : `Order Queries & Quotes (${prs.length})`}
+            {!isDepartment && prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed' && p.status !== 'Request Rejected').length > 0 && (
               <span className="ml-1 px-2 py-0.5 text-[10px] bg-[#23408e] text-white rounded-full font-semibold">
-                {prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed').length} Active
+                {prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed' && p.status !== 'Request Rejected').length} Active
+              </span>
+            )}
+            {currentUser.role === 'admin' && prs.some((p) => p.status === 'Awaiting Admin Approval') && (
+              <span className="ml-1 px-2 py-0.5 text-[10px] bg-amber-100 text-amber-900 border border-amber-300 rounded-full font-semibold">
+                {prs.filter((p) => p.status === 'Awaiting Admin Approval').length} to approve
               </span>
             )}
           </button>
 
-          {!isApprover && (
+          {!isDepartment && (
           <>
           <button
             id="tab-procurement"
@@ -1719,7 +1733,7 @@ export default function App() {
           </>
           )}
 
-          {(currentUser.role === 'admin' || isApprover) && (
+          {currentUser.role === 'admin' && (
             <button
               id="tab-reports"
               onClick={() => setActiveTab('reports')}
@@ -1804,6 +1818,9 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.2 }}
               >
+                {isDepartment ? (
+                  <DepartmentRequests currentUser={currentUser} prs={prs} onCreatePR={(pr) => setPrs((prev) => [pr, ...prev])} />
+                ) : (
                 <OrderQueryComparisonCenter
                   prs={prs}
                   vendors={vendors}
@@ -1828,10 +1845,11 @@ export default function App() {
                   poRefreshKey={poRefreshKey}
                   focusRequest={orderFocus}
                 />
+                )}
               </motion.div>
             )}
 
-            {activeTab === 'reports' && (currentUser.role === 'admin' || isApprover) && (
+            {activeTab === 'reports' && currentUser.role === 'admin' && (
               <motion.div
                 key="reports-view"
                 initial={{ opacity: 0, y: 10 }}

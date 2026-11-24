@@ -1,5 +1,35 @@
 import type { Project, Material, InventoryTransaction, User, SiteQuery, ContractorRecord, InternalTransferRecord, Vendor, MarketPriceBenchmark, ProjectRequirement, VendorQuotation } from './types';
 
+/** Departments whose staff can raise purchase requests (an admin approves each request) */
+export const DEPARTMENTS = ['HR', 'Sales', 'IT', 'Accounts'] as const;
+
+/** Department staff: sign in with email + password; their purchase requests need an admin's approval */
+function DEPARTMENT_USERS(): User[] {
+  const people: [id: string, name: string, email: string, password: string, title: string, department: (typeof DEPARTMENTS)[number]][] = [
+    ['dept-hr-1', 'Jyotsana Nikum', 'hr@greenovation.co', 'Jyotsana@123', 'HR Executive (TEAM_LEAD)', 'HR'],
+    ['dept-hr-2', 'Charuta Kulkarni', 'executive@brickfour.com', 'Charuta@123', 'Executive Assistant (DEPT_HEAD)', 'HR'],
+    ['dept-sales-1', 'Sonal Bhorkade', 'sonal.bhorkade2018@gmail.com', 'Sonal@123', 'Telecalling Lead (TEAM_LEAD)', 'Sales'],
+    ['dept-sales-2', 'Atul Bhardwaj', 'gbhardhwj@gmail.com', 'Atul@123', 'Sales Manager (EXECUTIVE)', 'Sales'],
+    ['dept-sales-3', 'Kapil Anil Aru', 'kapil.aru@brickfour.com', 'Kapil@123', 'Sales Executive (EXECUTIVE)', 'Sales'],
+    ['dept-sales-4', 'Omkar Sawant', 'omkar.sawant@brickfour.com', 'Omkar@123', 'Sales Executive (EXECUTIVE)', 'Sales'],
+    ['dept-sales-5', 'Bhagyashree Patil', 'bp2664619@gmail.com', 'Bhagyashree@123', 'Telecalling Executive (EXECUTIVE)', 'Sales'],
+    ['dept-sales-6', 'Sachin Bagkar', 'sachinbagkar22@gmail.com', 'Sachin@123', 'Sales Executive (EXECUTIVE)', 'Sales'],
+    ['dept-it-1', 'Amol Umesh Biradar', 'amolbiradar218@gmail.com', 'Amol@123', 'Site Engineer (DEPT_HEAD)', 'IT'],
+    ['dept-it-2', 'Yash Balasaheb Sabale', 'techsupport@brickfour.com', 'Yash@123', 'AI Automation Engineer (DEPT_HEAD)', 'IT'],
+    ['dept-accounts-1', 'Suvidha Deshmukh', 'suvidha.deshmukh@brickfour.com', 'Suvidha@123', 'Accounts Executive (EXECUTIVE)', 'Accounts'],
+    ['dept-accounts-2', 'Tayamma Bhandari', 'chaya.bhandari@brickfour.com', 'Tayamma@123', 'Senior Accountant (EXECUTIVE)', 'Accounts'],
+  ];
+  return people.map(([id, name, email, password, title, department]) => ({
+    id,
+    name,
+    email,
+    password,
+    role: 'department',
+    department,
+    title: `${title} - ${department}`,
+  }));
+}
+
 export const INITIAL_USERS: User[] = [
   {
     id: 'admin-1',
@@ -17,14 +47,7 @@ export const INITIAL_USERS: User[] = [
     role: 'admin',
     title: 'Purchase Executive (EXECUTIVE) - Purchase',
   },
-  {
-    id: 'approver-1',
-    name: 'Purchase Approver',
-    email: 'approver@brickfour.com',
-    password: 'Approver@123',
-    role: 'approver',
-    title: 'Purchase Approver',
-  },
+  ...DEPARTMENT_USERS(),
   {
     id: 'sm-1',
     name: 'Site Manager 1',
