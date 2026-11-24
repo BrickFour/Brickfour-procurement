@@ -2058,6 +2058,7 @@ export default function App() {
         marketBenchmarks={marketBenchmarks}
         material={orderQueryMaterial}
         onCreatePR={handleCreatePR}
+        onAddVendor={(vendor) => setVendors((prev) => (prev.some((v) => v.id === vendor.id) ? prev : [...prev, vendor]))}
       />
 
       {/* Vendor Quote Submission Modal (mounted only while open so its form state starts fresh) */}

@@ -5,6 +5,7 @@ import { getVendorsForMaterialCode, getMarketBenchmark } from '../lib/vendorComp
 import { useVendorPerformance, displayRating } from '../lib/vendorPerformance';
 import { withVendorQuoteTokens } from '../lib/vendorQuoteLinks';
 import { sendRfqEmails, submitRequestForApproval } from '../lib/rfqDispatch';
+import { NearbyVendorSearch } from './VendorPicker';
 import {
   X,
   ShoppingCart,
@@ -40,6 +41,8 @@ interface OrderQueryModalProps {
   vendors: Vendor[];
   marketBenchmarks: MarketPriceBenchmark[];
   onCreatePR: (pr: ProjectRequirement) => void;
+  /** Register a vendor found by the nearby search or added by hand (admins) */
+  onAddVendor?: (vendor: Vendor) => void;
 }
 
 export default function OrderQueryModal({
@@ -52,7 +55,11 @@ export default function OrderQueryModal({
   vendors,
   marketBenchmarks,
   onCreatePR,
+  onAddVendor,
 }: OrderQueryModalProps) {
+  // Opened from a specific material: the project and material are fixed
+  const lockedMaterial = Boolean(material);
+  const lockedBox = 'w-full px-3.5 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm font-medium text-slate-800';
   const { byVendor: vendorPerf } = useVendorPerformance();
   // Selected project
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -416,6 +423,9 @@ export default function OrderQueryModal({
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5 flex items-center gap-1">
                   <Building2 size={13} className="text-slate-400" /> Target Project Site *
                 </label>
+                {lockedMaterial ? (
+                  <div className={lockedBox}>{activeProject ? ` ()` : 'Project Site'}</div>
+                ) : (
                 <select
                   value={selectedProjectId}
                   onChange={(e) => setSelectedProjectId(e.target.value)}
@@ -428,6 +438,7 @@ export default function OrderQueryModal({
                     </option>
                   ))}
                 </select>
+                )}
               </div>
 
               {/* Material Selection */}
@@ -435,6 +446,9 @@ export default function OrderQueryModal({
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5 flex items-center gap-1">
                   <Sparkles size={13} className="text-[#23408e]" /> Select Construction Resource *
                 </label>
+                {lockedMaterial ? (
+                  <div className={lockedBox}>{activeMaterial ? `# -  ()` : 'Material'}</div>
+                ) : (
                 <select
                   value={selectedMatId}
                   onChange={(e) => {
@@ -459,6 +473,7 @@ export default function OrderQueryModal({
                       </option>
                     ))}
                 </select>
+                )}
               </div>
             </div>
 
@@ -850,7 +865,7 @@ export default function OrderQueryModal({
 
             {eligibleVendors.length === 0 ? (
               <div className="bg-slate-50 p-6 rounded-lg border border-dashed border-slate-300 text-center text-sm text-slate-500">
-                No vendors currently mapped to Material Code #{matCode}. You can still register the PR and invite vendors manually.
+                No registered vendor supplies Material Code #{matCode} yet.{onAddVendor && currentUser.role === 'admin' ? ' Suppliers nearby are being searched below, or add a vendor yourself.' : ' You can still register the PR and invite vendors manually.'}
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -912,6 +927,29 @@ export default function OrderQueryModal({
             )}
           </div>
 
+          {onAddVendor && currentUser.role === 'admin' && activeMaterial && (
+            <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-2">
+              <span className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <Users size={14} className="text-[#23408e]" /> Need another vendor?
+              </span>
+              <div key={activeMaterial.id}>
+              <NearbyVendorSearch
+                need={{
+                  item: activeMaterial.name,
+                  category: activeMaterial.category,
+                  specifications,
+                  materialCode: matCode,
+                  location: deliveryAddress || activeProject?.location || '',
+                }}
+                nearLabel="the site"
+                vendors={vendors}
+                autoSearch={eligibleVendors.length === 0}
+                onAddVendor={onAddVendor}
+                onAdded={(id) => setSelectedVendorIds((prev) => (prev.includes(id) ? prev : [...prev, id]))}
+              />
+              </div>
+            </div>
+          )}
           {/* Footer Actions */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
             <div className="text-sm text-slate-600">

@@ -1892,6 +1892,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       const isDepartment = Boolean(b.department);
       const location = str(b.location, 300) || OFFICE_ADDRESS;
       const wantNearby = b.nearby !== false;
+      // nearbyOnly: just the web search (the registered-vendor matching was already shown)
+      const wantMatch = b.nearbyOnly !== true;
 
       const db = await getMongoDb();
       const vendors: any[] = await db
@@ -1913,7 +1915,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         if (hit) matches.set(v.id, { vendorId: v.id, confidence: 'medium', reason: `Has supplied "${hit}" before` });
       }
 
-      const cacheKey = JSON.stringify([item.toLowerCase(), category, materialCode, location, vendors.length, wantNearby]);
+      const cacheKey = JSON.stringify([item.toLowerCase(), category, materialCode, location, vendors.length, wantNearby, wantMatch]);
       const cached = suggestCache.get(cacheKey);
       if (cached && Date.now() - cached.at < SUGGEST_TTL_MS) return res.json({ success: true, ...cached.data, cached: true });
 
@@ -1923,7 +1925,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
 
       // 2. AI review of the registered vendors
       const matchTask = (async () => {
-        if (!process.env.GEMINI_API_KEY || !vendors.length) return null;
+        if (!wantMatch || !process.env.GEMINI_API_KEY || !vendors.length) return null;
         const prompt = `A company's purchase team needs to buy: "${item}"${category ? ` (category: ${category})` : ''}${specifications ? `. Details: ${specifications}` : ''}.
 ${isDepartment ? 'This is an office/department purchase, not construction material.' : 'This is for a construction site.'}
 These are the company's registered vendors:
@@ -1990,7 +1992,7 @@ Use "" for anything you could not find.`;
         nearbyAvailable: Boolean(ai2),
       };
       // Cache only complete answers, so a slow or failed search is tried again next time
-      if (ai1 && (ai2 || !wantNearby)) suggestCache.set(cacheKey, { at: Date.now(), data });
+      if ((ai1 || !wantMatch) && (ai2 || !wantNearby)) suggestCache.set(cacheKey, { at: Date.now(), data });
       return res.json({ success: true, ...data });
     } catch (err) {
       return sendError(res, err, 'Vendor suggestions are not available right now.');
