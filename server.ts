@@ -1859,6 +1859,144 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     }
   });
 
+  /* ------------------------------------------------------------------ */
+  /* AI vendor suggestions for a requirement: which registered vendors    */
+  /* can supply it, and suppliers near the delivery location (web search) */
+  /* ------------------------------------------------------------------ */
+
+  const OFFICE_ADDRESS =
+    process.env.OFFICE_ADDRESS || 'Greenovation Projects Pvt Ltd, iSprout Panchshil Tech Park One, Tower C, Yerawada, Pune, Maharashtra 411006';
+  const suggestCache = new Map<string, { at: number; data: any }>();
+  const SUGGEST_TTL_MS = 6 * 3600 * 1000;
+
+  /** First JSON object / array in a model reply (with or without a ```json fence) */
+  const parseJsonReply = (text: string): any => {
+    const m = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || text.match(/[[{][\s\S]*[\]}]/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[1] ?? m[0]);
+    } catch {
+      return null;
+    }
+  };
+
+  app.post('/api/vendors/suggest', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+      const item = str(b.item, 150);
+      if (!item) throw new HttpError(400, 'Please give the item name.');
+      const category = str(b.category, 80);
+      const specifications = str(b.specifications, 500);
+      const materialCode = str(b.materialCode, 10);
+      const isDepartment = Boolean(b.department);
+      const location = str(b.location, 300) || OFFICE_ADDRESS;
+      const wantNearby = b.nearby !== false;
+
+      const db = await getMongoDb();
+      const vendors: any[] = await db
+        .collection('vendors')
+        .find({}, { projection: { _id: 0, id: 1, name: 1, address: 1, suppliedMaterialCodes: 1, suppliedItems: 1, status: 1 } })
+        .toArray();
+      const groupName = (code: string) => STANDARD_MATERIAL_GROUPS.find((g) => g.code === code)?.name || `code ${code}`;
+
+      // 1. Rule-based matches (always available): registered for the material code, or supplies a similar item
+      const words = `${item} ${category}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+      const matches = new Map<string, { vendorId: string; confidence: 'high' | 'medium' | 'low'; reason: string }>();
+      for (const v of vendors) {
+        if (materialCode && materialCode !== '000' && (v.suppliedMaterialCodes || []).includes(materialCode)) {
+          matches.set(v.id, { vendorId: v.id, confidence: 'high', reason: `Registered supplier for #${materialCode} ${groupName(materialCode)}` });
+          continue;
+        }
+        const items: string[] = (v.suppliedItems || []).map((s: any) => String(s).toLowerCase());
+        const hit = items.find((s) => words.some((w) => s.includes(w)));
+        if (hit) matches.set(v.id, { vendorId: v.id, confidence: 'medium', reason: `Has supplied "${hit}" before` });
+      }
+
+      const cacheKey = JSON.stringify([item.toLowerCase(), category, materialCode, location, vendors.length, wantNearby]);
+      const cached = suggestCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < SUGGEST_TTL_MS) return res.json({ success: true, ...cached.data, cached: true });
+
+      const vendorList = vendors
+        .map((v) => `- id=${v.id} | ${v.name} | supplies: ${[...(v.suppliedMaterialCodes || []).map(groupName), ...(v.suppliedItems || [])].join(', ') || 'not recorded'} | ${v.address || ''}`)
+        .join('\n');
+
+      // 2. AI review of the registered vendors
+      const matchTask = (async () => {
+        if (!process.env.GEMINI_API_KEY || !vendors.length) return null;
+        const prompt = `A company's purchase team needs to buy: "${item}"${category ? ` (category: ${category})` : ''}${specifications ? `. Details: ${specifications}` : ''}.
+${isDepartment ? 'This is an office/department purchase, not construction material.' : 'This is for a construction site.'}
+These are the company's registered vendors:
+${vendorList}
+
+Which of these vendors can realistically supply this item? Only include vendors whose business plausibly covers it; it is fine to return none.
+Reply ONLY with JSON: {"matches":[{"vendorId":"<id from the list>","confidence":"high|medium|low","reason":"<max 15 words>"}]}`;
+        const response: any = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt, config: { temperature: 0.1, responseMimeType: 'application/json' } });
+        return parseJsonReply(response?.text || '');
+      })().catch((e) => {
+        console.warn('[Vendor suggest] matching failed:', e?.message || e);
+        return null;
+      });
+
+      // 3. Suppliers near the delivery location (Google Search grounding)
+      const nearbyTask = (async () => {
+        if (!wantNearby || !process.env.GEMINI_API_KEY) return null;
+        const prompt = `Use Google Search to find up to 6 real businesses (shops, dealers, distributors or manufacturers) that sell "${item}"${category ? ` (${category})` : ''} close to this address: ${location}.
+Prefer the nearest ones that sell to businesses. Do not invent businesses; only list ones you found.
+Reply ONLY with JSON: {"suppliers":[{"name":"","address":"","distanceKm":<approx km from the address, number>,"phone":"","email":"","website":"","reason":"<what they sell, max 15 words>"}]}
+Use "" for anything you could not find.`;
+        const response: any = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }], temperature: 0.1 } });
+        return parseJsonReply(response?.text || '');
+      })().catch((e) => {
+        console.warn('[Vendor suggest] nearby search failed:', e?.message || e);
+        return null;
+      });
+
+      // The web search can be slow: stop waiting after 40 s so the reply stays within the hosting time limit (60 s)
+      const within = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
+      const [ai1, ai2] = await Promise.all([within(matchTask, 25000), within(nearbyTask, 40000)]);
+      const rank = { high: 3, medium: 2, low: 1 } as const;
+      for (const m of Array.isArray(ai1?.matches) ? ai1.matches : []) {
+        const id = str(m?.vendorId, 100);
+        if (!vendors.some((v) => v.id === id)) continue; // ignore ids the model made up
+        const confidence = (['high', 'medium', 'low'].includes(m.confidence) ? m.confidence : 'low') as 'high' | 'medium' | 'low';
+        const prev = matches.get(id);
+        if (!prev || rank[confidence] > rank[prev.confidence]) matches.set(id, { vendorId: id, confidence, reason: str(m.reason, 140) || prev?.reason || 'Suggested by AI' });
+      }
+      const cleanUrl = (u: unknown) => {
+        const s = str(u, 300);
+        return /^https?:\/\//i.test(s) ? s : '';
+      };
+      const registered = new Set(vendors.map((v) => String(v.name || '').trim().toLowerCase()));
+      const nearby = (Array.isArray(ai2?.suppliers) ? ai2.suppliers : [])
+        .map((s: any) => ({
+          name: str(s?.name, 120),
+          address: str(s?.address, 250),
+          ...(Number(s?.distanceKm) > 0 ? { distanceKm: Math.round(Number(s.distanceKm) * 10) / 10 } : {}),
+          ...(str(s?.phone, 40) ? { phone: str(s.phone, 40) } : {}),
+          ...(isValidEmail(str(s?.email, 120)) ? { email: str(s.email, 120).toLowerCase() } : {}),
+          ...(cleanUrl(s?.website) ? { website: cleanUrl(s.website) } : {}),
+          ...(str(s?.reason, 140) ? { reason: str(s.reason, 140) } : {}),
+        }))
+        .filter((s: any) => s.name && s.address && !registered.has(s.name.toLowerCase()))
+        .sort((a: any, b: any) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999))
+        .slice(0, 6);
+
+      const data = {
+        matches: [...matches.values()].sort((a, b) => rank[b.confidence] - rank[a.confidence]),
+        nearby,
+        location,
+        aiAvailable: Boolean(ai1 || ai2),
+        nearbyAvailable: Boolean(ai2),
+      };
+      // Cache only complete answers, so a slow or failed search is tried again next time
+      if (ai1 && (ai2 || !wantNearby)) suggestCache.set(cacheKey, { at: Date.now(), data });
+      return res.json({ success: true, ...data });
+    } catch (err) {
+      return sendError(res, err, 'Vendor suggestions are not available right now.');
+    }
+  });
+
   // List of issued purchase orders (for tracking)
   app.get('/api/purchase-orders', async (_req, res) => {
     try {

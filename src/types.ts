@@ -233,6 +233,29 @@ export interface Vendor {
   standardCreditPeriod: string; // e.g. "30 Days", "45 Days", "15 Days", "Advance"
   avgLeadDays: number; // e.g. 2
   status: 'Approved' | 'Verified' | 'Preferred' | 'Under Review';
+  /** Items / categories the vendor supplies beyond the material codes (e.g. "Office furniture"), used for AI matching */
+  suppliedItems?: string[];
+  website?: string;
+  /** How the vendor was added, e.g. "Nearby search (AI)" */
+  source?: string;
+}
+
+/** Existing vendor that the AI thinks can supply an item */
+export interface VendorMatch {
+  vendorId: string;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+}
+
+/** Supplier near the delivery location found by the AI web search (not yet a registered vendor) */
+export interface NearbySupplier {
+  name: string;
+  address: string;
+  distanceKm?: number;
+  phone?: string;
+  email?: string;
+  website?: string;
+  reason?: string;
 }
 
 export interface MarketPriceBenchmark {

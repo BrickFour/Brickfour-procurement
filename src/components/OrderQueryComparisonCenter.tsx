@@ -25,10 +25,12 @@ import {
   landedCostPerUnit,
   parseCreditDays,
   EVALUATION_CRITERIA_TEXT,
-  getVendorsForMaterialCode,
 } from '../lib/vendorComparison';
 import { withVendorQuoteTokens } from '../lib/vendorQuoteLinks';
 import { sendRfqEmails } from '../lib/rfqDispatch';
+import VendorPicker from './VendorPicker';
+import { departmentProjectId, isDepartmentProjectId } from '../lib/rfqDispatch';
+import { DEPARTMENTS } from '../initialData';
 
 /** Requirements that are not open RFQs: waiting for an admin, rejected, waiting for vendor approval, awarded or closed */
 const NOT_OPEN: string[] = ['Awaiting Admin Approval', 'Request Rejected', 'Pending Approval', 'Awarded', 'Closed'];
@@ -110,6 +112,8 @@ interface OrderQueryComparisonCenterProps {
   onOpenSubmitQuote: (pr: ProjectRequirement) => void;
   /** A requirement changed on the server (sent for approval, approved, rejected) */
   onPrUpdated: (pr: ProjectRequirement) => void;
+  /** Register a new vendor (from the approval dialog: nearby supplier or 'Other') */
+  onAddVendor: (vendor: Vendor) => void;
   /** Quotations changed on the server (counter-offer sent): re-read them */
   onQuotesChanged: () => void;
   /** A PO was issued on approval (refresh notifications etc.) */
@@ -539,6 +543,7 @@ export default function OrderQueryComparisonCenter({
   onOpenNewPR,
   onOpenSubmitQuote,
   onPrUpdated,
+  onAddVendor,
   onQuotesChanged,
   onPoIssued,
   onRecordDelivery,
@@ -730,28 +735,41 @@ export default function OrderQueryComparisonCenter({
     );
   };
 
+  // Admins can narrow everything to one department, or to project sites only
+  const [deptFilter, setDeptFilter] = useState<string>('all');
+  const inFilter = useCallback(
+    (projectId?: string, department?: string) => {
+      if (deptFilter === 'all') return true;
+      const dept = department || DEPARTMENTS.find((d) => departmentProjectId(d) === projectId) || (isDepartmentProjectId(projectId) ? 'Other' : '');
+      return deptFilter === 'sites' ? !dept : dept === deptFilter;
+    },
+    [deptFilter]
+  );
+  const visiblePrs = useMemo(() => prs.filter((p) => inFilter(p.projectId, p.department)), [prs, inFilter]);
+  const visiblePos = useMemo(() => purchaseOrders.filter((po) => inFilter(po.projectId)), [purchaseOrders, inFilter]);
+
   // Open RFQs = approved requests not yet sent for vendor approval / awarded / closed. Awarded RFQs move to Purchase Orders.
-  const openPrs = useMemo(() => prs.filter((p) => !NOT_OPEN.includes(p.status)), [prs]);
+  const openPrs = useMemo(() => visiblePrs.filter((p) => !NOT_OPEN.includes(p.status)), [visiblePrs]);
   // Purchase requests from site managers / departments waiting for an admin (and recently rejected ones)
-  const pendingRequests = useMemo(() => prs.filter((p) => p.status === 'Awaiting Admin Approval'), [prs]);
+  const pendingRequests = useMemo(() => visiblePrs.filter((p) => p.status === 'Awaiting Admin Approval'), [visiblePrs]);
   const rejectedRequests = useMemo(
     () =>
-      prs
+      visiblePrs
         .filter((p) => p.status === 'Request Rejected')
         .sort((a, b) => String(b.requestApproval?.decidedAt).localeCompare(String(a.requestApproval?.decidedAt)))
         .slice(0, 15),
-    [prs]
+    [visiblePrs]
   );
-  const approvalPrs = useMemo(() => prs.filter((p) => p.status === 'Pending Approval'), [prs]);
+  const approvalPrs = useMemo(() => visiblePrs.filter((p) => p.status === 'Pending Approval'), [visiblePrs]);
   const decidedApprovals = useMemo(
     () =>
-      prs
+      visiblePrs
         .filter((p) => p.approval && p.approval.status !== 'Pending')
         .sort((a, b) => String(b.approval?.decidedAt).localeCompare(String(a.approval?.decidedAt)))
         .slice(0, 15),
-    [prs]
+    [visiblePrs]
   );
-  const awardedWithoutPo = useMemo(() => prs.filter((p) => p.status === 'Awarded' && !p.purchaseOrder && p.selectedVendorId), [prs]);
+  const awardedWithoutPo = useMemo(() => visiblePrs.filter((p) => p.status === 'Awarded' && !p.purchaseOrder && p.selectedVendorId), [visiblePrs]);
   const quotesByPr = useMemo(() => {
     const map = new Map<string, VendorQuotation[]>();
     for (const q of quotes) map.set(q.prId, [...(map.get(q.prId) || []), q]);
@@ -777,9 +795,9 @@ export default function OrderQueryComparisonCenter({
   }, [selectedPr]);
 
   const kpiOpenQuotes = openPrs.reduce((s, p) => s + (quotesByPr.get(p.id) || []).filter((q) => q.status !== 'Declined').length, 0);
-  const pendingDelivery = purchaseOrders.filter((p) => p.deliveryStatus !== 'Received').length;
-  const invoiced = purchaseOrders.reduce((s, p) => s + (p.invoicedAmount || 0), 0);
-  const unpaidReceipts = purchaseOrders.flatMap((p) => p.receipts.filter((r) => r.paymentStatus === 'Unpaid'));
+  const pendingDelivery = visiblePos.filter((p) => p.deliveryStatus !== 'Received').length;
+  const invoiced = visiblePos.reduce((s, p) => s + (p.invoicedAmount || 0), 0);
+  const unpaidReceipts = visiblePos.flatMap((p) => p.receipts.filter((r) => r.paymentStatus === 'Unpaid'));
   const unpaidTotal = unpaidReceipts.reduce((s, r) => s + (r.invoiceTotal || 0), 0);
 
   return (
@@ -814,7 +832,7 @@ export default function OrderQueryComparisonCenter({
           hint={pendingRequests.length + approvalPrs.length ? `${pendingRequests.length + approvalPrs.length} waiting for admin approval` : 'Awaiting quotes / comparison'}
         />
         <Kpi label="Quotes Received" value={kpiOpenQuotes} hint="On open RFQs" />
-        <Kpi label="Purchase Orders" value={purchaseOrders.length} hint={`${pendingDelivery} awaiting delivery`} />
+        <Kpi label="Purchase Orders" value={visiblePos.length} hint={`${pendingDelivery} awaiting delivery`} />
         <Kpi label="Invoiced" value={rs(invoiced, 0)} hint={unpaidReceipts.length ? `${rs(unpaidTotal, 0)} unpaid (${unpaidReceipts.length} invoice${unpaidReceipts.length === 1 ? '' : 's'})` : 'Against purchase orders'} />
       </div>
 
@@ -833,7 +851,7 @@ export default function OrderQueryComparisonCenter({
               ['requests', `Requests${pendingRequests.length ? ` (${pendingRequests.length})` : ''}`],
               ['rfqs', `Open RFQs (${openPrs.length})`],
               ['approvals', `Vendor Approvals${approvalPrs.length ? ` (${approvalPrs.length})` : ''}`],
-              ['pos', `Purchase Orders (${purchaseOrders.length + awardedWithoutPo.length})`],
+              ['pos', `Purchase Orders (${visiblePos.length + awardedWithoutPo.length})`],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -848,6 +866,28 @@ export default function OrderQueryComparisonCenter({
               {label}
             </button>
           ))}
+          {isAdmin && (
+            <label className="ml-auto pb-1.5 inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+              Department
+              <select
+                id="filter-department"
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30 cursor-pointer"
+              >
+                <option value="all">All departments &amp; sites</option>
+                <option value="sites">Project sites only</option>
+                {DEPARTMENTS.map((d) => {
+                  const waiting = prs.filter((p) => p.status === 'Awaiting Admin Approval' && p.department === d).length;
+                  return (
+                    <option key={d} value={d}>
+                      {d}{waiting ? ` (${waiting} to approve)` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+          )}
         </div>
       )}
 
@@ -998,8 +1038,10 @@ export default function OrderQueryComparisonCenter({
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             {loadingPos && purchaseOrders.length === 0 ? (
               <div className="p-10 text-center text-sm text-slate-500 inline-flex w-full justify-center gap-2"><Loader2 size={16} className="animate-spin" /> Loading purchase orders…</div>
-            ) : purchaseOrders.length === 0 ? (
-              <div className="p-10 text-center text-sm text-slate-500">No purchase orders yet. A PO is generated and emailed to the vendor when you award an RFQ.</div>
+            ) : visiblePos.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                {purchaseOrders.length ? 'No purchase orders match this filter.' : 'No purchase orders yet. A PO is generated and emailed to the vendor when you award an RFQ.'}
+              </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -1018,7 +1060,7 @@ export default function OrderQueryComparisonCenter({
                     </tr>
                   </thead>
                   <tbody>
-                    {purchaseOrders.map((po) => {
+                    {visiblePos.map((po) => {
                       const pct = po.orderedQty ? Math.min(100, (po.receivedQty / po.orderedQty) * 100) : 0;
                       const open = expandedPo === po.poNumber;
                       return (
@@ -1286,6 +1328,7 @@ export default function OrderQueryComparisonCenter({
           pr={requestDecision.pr}
           kind={requestDecision.kind}
           vendors={vendors}
+          onAddVendor={onAddVendor}
           onClose={() => setRequestDecision(null)}
           onSubmit={async (input) => {
             await decideRequest(requestDecision.pr, requestDecision.kind, input);
@@ -1320,8 +1363,10 @@ function DialogShell({
   onSubmit,
   submitLabel,
   submitClass = 'bg-[#23408e] hover:bg-[#1b3170]',
+  wide = false,
   children,
 }: {
+  wide?: boolean;
   title: string;
   subtitle?: string;
   onClose: () => void;
@@ -1350,7 +1395,7 @@ function DialogShell({
             setBusy(false);
           }
         }}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto"
+        className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} max-h-[92vh] overflow-y-auto`}
       >
         <div className="flex items-start justify-between px-6 py-4 border-b border-slate-200">
           <div>
@@ -1436,25 +1481,21 @@ function RequestDecisionDialog({
   pr,
   kind,
   vendors,
+  onAddVendor,
   onClose,
   onSubmit,
 }: {
   pr: ProjectRequirement;
   kind: 'approve' | 'reject';
   vendors: Vendor[];
+  onAddVendor: (vendor: Vendor) => void;
   onClose: () => void;
   onSubmit: (input: { comment: string; vendorIds?: string[]; quoteDeadline?: string }) => Promise<void>;
 }) {
   const [comment, setComment] = useState('');
-  const eligible = useMemo(() => (pr.department ? [] : getVendorsForMaterialCode(pr.materialCode, vendors)), [pr, vendors]);
-  const [showAll, setShowAll] = useState(eligible.length === 0);
-  const list = showAll ? vendors : eligible;
-  const [picked, setPicked] = useState<string[]>(() => {
-    const suggested = (pr.invitedVendorIds || []).filter((id) => vendors.some((v) => v.id === id));
-    return suggested.length ? suggested : eligible.map((v) => v.id);
-  });
+  // Vendors suggested by the requester; otherwise the AI picker pre-selects its best matches
+  const [picked, setPicked] = useState<string[]>(() => (pr.invitedVendorIds || []).filter((id) => vendors.some((v) => v.id === id)));
   const [deadline, setDeadline] = useState(() => defaultDeadline(pr));
-  const toggle = (id: string) => setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   return (
     <DialogShell
       title={kind === 'approve' ? 'Approve request and send RFQ' : 'Reject request'}
@@ -1470,6 +1511,7 @@ function RequestDecisionDialog({
         await onSubmit({ comment: comment.trim(), vendorIds: picked, quoteDeadline: new Date(deadline).toISOString() });
       }}
       submitLabel={kind === 'approve' ? `Approve & Send RFQ (${picked.length})` : 'Reject'}
+      wide={kind === 'approve'}
       submitClass={kind === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}
     >
       <div className="rounded-xl bg-[#f5f8fd] border border-[#d9e3f5] p-3 text-sm space-y-1">
@@ -1481,31 +1523,7 @@ function RequestDecisionDialog({
       </div>
       {kind === 'approve' && (
         <>
-          <div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-slate-700">Send the RFQ to *</span>
-              {eligible.length > 0 && (
-                <button type="button" onClick={() => setShowAll((s) => !s)} className="text-xs font-semibold text-[#23408e] hover:underline cursor-pointer">
-                  {showAll ? `Only vendors for code #${pr.materialCode}` : 'Show all vendors'}
-                </button>
-              )}
-            </div>
-            {list.length === 0 ? (
-              <p className="mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                No vendors are registered yet. Add the vendor under Procurements → Bulk upload / vendor registry first, then approve.
-              </p>
-            ) : (
-              <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100">
-                {list.map((v) => (
-                  <label key={v.id} className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
-                    <input type="checkbox" checked={picked.includes(v.id)} onChange={() => toggle(v.id)} className="accent-[#23408e]" />
-                    <span className="flex-1 text-slate-900">{v.name}</span>
-                    <span className="text-xs text-slate-500">{v.email || 'no email'}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
+          <VendorPicker pr={pr} vendors={vendors} picked={picked} onChange={setPicked} onAddVendor={onAddVendor} />
           <label className="block text-sm font-medium text-slate-700">
             Quotation deadline *
             <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={`${dialogField} mt-1`} />

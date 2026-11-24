@@ -1838,6 +1838,7 @@ export default function App() {
                     setIsQuoteModalOpen(true);
                   }}
                   onPrUpdated={handlePrUpdated}
+                  onAddVendor={(vendor) => setVendors((prev) => (prev.some((v) => v.id === vendor.id) ? prev : [...prev, vendor]))}
                   onQuotesChanged={refreshVendorQuotes}
                   onPoIssued={() => notificationsRefresh.current?.()}
                   onRecordDelivery={handleRecordDelivery}
