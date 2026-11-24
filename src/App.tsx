@@ -1523,7 +1523,7 @@ export default function App() {
                   {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? 'Department' : 'Site Manager')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
-                  {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? ` Dept` : 'Site Manager'}
+                  {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? `${currentUser.department || 'Department'} Dept` : 'Site Manager'}
                 </span>
               </div>
             </div>

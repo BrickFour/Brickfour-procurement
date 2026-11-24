@@ -424,7 +424,7 @@ export default function OrderQueryModal({
                   <Building2 size={13} className="text-slate-400" /> Target Project Site *
                 </label>
                 {lockedMaterial ? (
-                  <div className={lockedBox}>{activeProject ? ` ()` : 'Project Site'}</div>
+                  <div className={lockedBox}>{activeProject ? `${activeProject.name} (${activeProject.location})` : 'Project Site'}</div>
                 ) : (
                 <select
                   value={selectedProjectId}
@@ -447,7 +447,7 @@ export default function OrderQueryModal({
                   <Sparkles size={13} className="text-[#23408e]" /> Select Construction Resource *
                 </label>
                 {lockedMaterial ? (
-                  <div className={lockedBox}>{activeMaterial ? `# -  ()` : 'Material'}</div>
+                  <div className={lockedBox}>{activeMaterial ? `#${matCode} - ${activeMaterial.name} (${activeMaterial.category})` : 'Material'}</div>
                 ) : (
                 <select
                   value={selectedMatId}
