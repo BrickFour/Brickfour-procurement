@@ -546,7 +546,7 @@ export default function TransactionHistory({
           )}
         </div>
 
-        <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto" role="tablist">
+        <div className="nav-tabs flex items-center gap-1 border-b border-slate-200 overflow-x-auto overflow-y-hidden" role="tablist">
           {(
             [
               { id: 'daily', label: 'Daily (7 Days)', desc: 'Last 7 Days' },

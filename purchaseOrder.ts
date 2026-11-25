@@ -147,9 +147,16 @@ export async function renderPurchaseOrderPdf(po: PurchaseOrderData): Promise<Buf
     x = L + lw + 14;
   }
   const companyW = Math.max(150, 322 - x); // stays clear of the PURCHASE ORDER block on the right
-  doc.font('Helvetica-Bold').fontSize(14).fillColor(NAVY).text(po.company.name.toUpperCase(), x, 40, { width: companyW });
-  doc.font('Helvetica').fontSize(8).fillColor(MUTED);
-  for (const line of po.company.lines) doc.text(line, x, doc.y + 1, { width: companyW });
+  if (logo) {
+    // The logo already shows the company name: only the address / GST lines go beside it
+    doc.font('Helvetica').fontSize(8).fillColor(MUTED);
+    doc.y = 42;
+    for (const line of po.company.lines) doc.text(line, x, doc.y + 1, { width: companyW });
+  } else {
+    doc.font('Helvetica-Bold').fontSize(14).fillColor(NAVY).text(po.company.name.toUpperCase(), x, 40, { width: companyW });
+    doc.font('Helvetica').fontSize(8).fillColor(MUTED);
+    for (const line of po.company.lines) doc.text(line, x, doc.y + 1, { width: companyW });
+  }
 
   doc.font('Helvetica-Bold').fontSize(18).fillColor(NAVY).text('PURCHASE ORDER', 330, 38, { width: R - 330, align: 'right' });
   const meta: [string, string][] = [

@@ -706,7 +706,7 @@ export default function GstUrdBillsSummary({
       </div>
 
       {/* Sub-navigation tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto" id="bill-type-subtabs" role="tablist">
+      <div className="nav-tabs flex items-center gap-1 border-b border-slate-200 overflow-x-auto overflow-y-hidden" id="bill-type-subtabs" role="tablist">
         {(
           [
             ['all', 'subtab-all-bills', <Layers key="i" size={14} />, `All Bills (${allBills.length})`],

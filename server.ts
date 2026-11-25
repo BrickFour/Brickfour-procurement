@@ -3040,7 +3040,15 @@ Use "" for anything you could not find.`;
       const db = await getMongoDb();
       const po: any = await db.collection(PURCHASE_ORDERS).findOne({ poNumber });
       if (!po) throw new HttpError(404, 'Purchase order not found.');
-      const pdf: Buffer = Buffer.from(po.pdf.buffer ?? po.pdf);
+      // Draw the PO from its saved details with the current layout (older POs saved before a layout fix
+      // then show the corrected header too); the stored PDF is the fallback
+      let pdf: Buffer;
+      try {
+        if (!po.data?.items?.length) throw new Error('no saved PO details');
+        pdf = await renderPurchaseOrderPdf(po.data);
+      } catch {
+        pdf = Buffer.from(po.pdf.buffer ?? po.pdf);
+      }
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Length', String(pdf.length));
       res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${poNumber}.pdf"`);

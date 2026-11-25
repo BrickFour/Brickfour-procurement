@@ -457,7 +457,7 @@ export default function MaterialList({
       </div>
 
       {/* Stock status tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto" role="tablist">
+      <div className="nav-tabs flex items-center gap-1 border-b border-slate-200 overflow-x-auto overflow-y-hidden" role="tablist">
         {(
           [
             ['all', `All Materials (${projectMaterials.length})`, 'btn-stock-filter-all', null],

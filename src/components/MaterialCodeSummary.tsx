@@ -103,17 +103,6 @@ export default function MaterialCodeSummary({
     }));
   };
 
-  const expandAll = () => {
-    const all: Record<string, boolean> = {};
-    codeGroups.forEach((g) => {
-      all[g.code] = true;
-    });
-    setExpandedCodes(all);
-  };
-
-  const collapseAll = () => {
-    setExpandedCodes({});
-  };
 
   // Aggregate all code groups
   const allGroups = useMemo(() => {
@@ -413,14 +402,6 @@ export default function MaterialCodeSummary({
                 </button>
               ))}
             </div>
-
-            {viewMode === 'cards' && (
-              <div className="flex items-center gap-1 text-xs font-semibold">
-                <button onClick={expandAll} className="px-2 py-1.5 text-[#23408e] hover:underline cursor-pointer">Expand All</button>
-                <span className="text-slate-300">|</span>
-                <button onClick={collapseAll} className="px-2 py-1.5 text-[#23408e] hover:underline cursor-pointer">Collapse</button>
-              </div>
-            )}
           </div>
         </div>
 

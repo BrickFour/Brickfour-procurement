@@ -129,7 +129,7 @@ export default function QueryCenter({
       </div>
 
       {/* Status tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto" role="tablist">
+      <div className="nav-tabs flex items-center gap-1 border-b border-slate-200 overflow-x-auto overflow-y-hidden" role="tablist">
         {(['All', 'Open', 'In Progress', 'Resolved'] as const).map((st) => {
           const n = st === 'All' ? queries.length : st === 'Open' ? openCount : st === 'In Progress' ? inProgressCount : resolvedCount;
           return (
