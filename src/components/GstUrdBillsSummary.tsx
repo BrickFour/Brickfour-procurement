@@ -1,4 +1,5 @@
 import { useState, useMemo, FormEvent, Fragment } from 'react';
+import { downloadCsv, printReport, fileSafe, todayIso, inr } from '../lib/exportUtils';
 import { Material, InventoryTransaction, Project, User, BillType } from '../types';
 import {
   Search,
@@ -501,62 +502,65 @@ export default function GstUrdBillsSummary({
     setNewBillInvoiceUrl('');
   };
 
-  // Export CSV
+  // Register columns shared by the CSV export and the printed report (from the records shown on screen)
+  const registerFilters = (): [string, string][] => [
+    ['Project', filterProject === 'all' ? 'All projects' : getProjectName(filterProject)],
+    ...(filterCategory !== 'All' ? ([['Category', filterCategory]] as [string, string][]) : []),
+    ...(filterGstRate !== 'All' ? ([['GST rate', filterGstRate]] as [string, string][]) : []),
+    ...(searchQuery.trim() ? ([['Search', searchQuery.trim()]] as [string, string][]) : []),
+  ];
+
+  // Export CSV (valid in Excel and Google Sheets: quoted fields, UTF-8, real values from the database)
   const handleExportCsv = () => {
     const headers = [
-      'Bill Type',
-      'Bill Number',
-      'Date',
-      'Project',
-      'Material Code',
-      'Material Name',
-      'Category',
-      'Vendor Name',
-      'Vendor GSTIN',
-      'Quantity',
-      'Unit',
-      'Unit Rate (Rs)',
-      'Taxable Base Amount (Rs)',
-      'GST Rate (%)',
-      'GST Amount (Rs)',
-      'CGST (Rs)',
-      'SGST (Rs)',
-      'Grand Total Amount (Rs)',
-      'Notes',
+      'Bill Type', 'Bill Number', 'Date', 'Project', 'Material Code', 'Material Name', 'Category', 'Vendor Name', 'Vendor GSTIN',
+      'Quantity', 'Unit', 'Unit Rate (Rs)', 'Taxable Amount (Rs)', 'GST Rate (%)', 'GST Amount (Rs)', 'CGST (Rs)', 'SGST (Rs)', 'Total Amount (Rs)', 'Notes',
     ];
-
     const rows = filteredBills.map((b) => [
       b.billType,
-      `"${b.billNumber}"`,
+      b.billNumber,
       b.date,
-      `"${b.projectName}"`,
-      `"#${b.materialCode}"`,
-      `"${b.materialName}"`,
-      `"${b.category}"`,
-      `"${b.vendorName}"`,
-      `"${b.vendorGstin || 'N/A'}"`,
+      b.projectName,
+      b.materialCode ? `#${b.materialCode}` : '',
+      b.materialName,
+      b.category,
+      b.vendorName,
+      b.vendorGstin || '',
       b.quantity,
       b.unit,
       b.unitRate,
       b.baseAmount,
-      b.billType === 'GST' ? `${b.gstRate}%` : '0% (URD)',
+      b.billType === 'GST' ? b.gstRate : 0,
       b.gstAmount,
       b.cgstAmount,
       b.sgstAmount,
       b.totalAmount,
-      `"${b.notes || ''}"`,
+      b.notes || '',
     ]);
-
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `GST_URD_Bills_Register_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const scope = filterProject === 'all' ? 'All_Projects' : fileSafe(getProjectName(filterProject));
+    downloadCsv(`GST_URD_Bills_Register_${scope}_${todayIso()}.csv`, headers, rows);
   };
 
+  // Print: a clean A4 landscape register (no navigation, buttons or coloured backgrounds)
+  const handlePrint = () => {
+    const sum = (k: 'baseAmount' | 'gstAmount' | 'totalAmount') => filteredBills.reduce((s, b) => s + (Number(b[k]) || 0), 0);
+    printReport({
+      title: 'GST & URD Bills Register',
+      subtitle: 'Tax invoices from registered vendors (GST) and unregistered dealer purchases (URD vouchers).',
+      meta: registerFilters(),
+      landscape: true,
+      columns: [
+        { header: 'Type' }, { header: 'Bill No.' }, { header: 'Date' }, { header: 'Project' }, { header: 'Code' }, { header: 'Material' },
+        { header: 'Vendor' }, { header: 'GSTIN' }, { header: 'Qty', align: 'right' }, { header: 'Rate', align: 'right' },
+        { header: 'Taxable', align: 'right' }, { header: 'GST %', align: 'right' }, { header: 'GST', align: 'right' }, { header: 'Total', align: 'right' },
+      ],
+      rows: filteredBills.map((b) => [
+        b.billType, b.billNumber, b.date, b.projectName, b.materialCode ? `#${b.materialCode}` : '', b.materialName, b.vendorName, b.vendorGstin || '-',
+        `${b.quantity} ${b.unit}`, inr(b.unitRate), inr(b.baseAmount), b.billType === 'GST' ? `${b.gstRate}%` : 'URD', inr(b.gstAmount), inr(b.totalAmount),
+      ]),
+      totals: ['Total', '', '', '', '', '', '', '', '', '', inr(sum('baseAmount')), '', inr(sum('gstAmount')), inr(sum('totalAmount'))],
+    });
+  };
   return (
     <div className="space-y-5 animate-in fade-in duration-200" id="gst-urd-bills-container">
       {/* Header */}
@@ -578,7 +582,7 @@ export default function GstUrdBillsSummary({
               id: 'btn-print-bills-report',
               label: 'Print Tax Register',
               icon: <Printer size={18} />,
-              onClick: () => window.print(),
+              onClick: handlePrint,
               cls: 'border border-slate-300 text-slate-700 bg-white hover:bg-slate-50',
             },
             {

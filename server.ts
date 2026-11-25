@@ -13,6 +13,7 @@ import {
 import { extractInvoiceFields, normaliseInvoice, INVOICE_KINDS } from './invoiceExtraction.js';
 import { parseCreditDays } from './src/lib/vendorComparison.js';
 import { STANDARD_MATERIAL_GROUPS } from './src/lib/materialCodes.js';
+import { validateContract, firstError } from './src/lib/contractValidation.js';
 import {
   columnsFor,
   BULK_MAX_ROWS,
@@ -160,9 +161,40 @@ async function initMongoCollections(db: Db) {
   try {
     await db.collection('notifications').createIndex({ id: 1 }, { name: 'id_lookup', unique: true });
     await db.collection('notifications').createIndex({ createdAt: -1 }, { name: 'newest_first' });
+    // Notifications expire 3 days after they were created (read or unread): MongoDB removes them itself
+    await db.collection('notifications').createIndex({ expiresAt: 1 }, { name: 'expire_after_3_days', expireAfterSeconds: 0 });
+    // Older notifications created before the expiry rule: give them an expiry from their creation time
+    await db
+      .collection('notifications')
+      .updateMany({ expiresAt: { $exists: false }, createdAt: { $type: 'string' } }, [
+        { $set: { expiresAt: { $dateAdd: { startDate: { $toDate: '$createdAt' }, unit: 'millisecond', amount: NOTIFICATION_TTL_MS } } } },
+      ]);
+    await purgeExpiredNotifications(db);
   } catch (e: any) {
     console.warn('[MongoDB] Could not prepare notifications:', e?.message || e);
   }
+  // A vendor's one allowed quotation submission (see /api/vendor-quote); _id = "<PR id>|<vendor id>"
+  try {
+    if (!(await db.listCollections({ name: 'quote_submissions' }, { nameOnly: true }).toArray()).length) await db.createCollection('quote_submissions');
+  } catch (e: any) {
+    console.warn('[MongoDB] Could not prepare quote_submissions:', e?.message || e);
+  }
+}
+
+/** Notifications are kept for 3 days after they are created */
+const NOTIFICATION_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const notificationCutoffIso = () => new Date(Date.now() - NOTIFICATION_TTL_MS).toISOString();
+
+/**
+ * Deletes notifications older than 3 days (read and unread). MongoDB's TTL index also removes them,
+ * but it runs only about once a minute, so the app deletes them as well (daily job, server start, listing).
+ */
+async function purgeExpiredNotifications(db: Db): Promise<number> {
+  const result = await db
+    .collection('notifications')
+    .deleteMany({ $or: [{ createdAt: { $lt: notificationCutoffIso() } }, { expiresAt: { $lte: new Date() } }] });
+  if (result.deletedCount) console.log(`[Notifications] Removed ${result.deletedCount} notification(s) older than 3 days`);
+  return result.deletedCount;
 }
 
 /** Today's date (YYYY-MM-DD) in the business time zone */
@@ -223,7 +255,7 @@ async function notify(
     const { readBy = [], ...doc } = n;
     await db.collection('notifications').updateOne(
       { id: n.id },
-      { $setOnInsert: { ...doc, severity: n.severity || 'info', createdAt: new Date().toISOString(), readBy } },
+      { $setOnInsert: { ...doc, severity: n.severity || 'info', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + NOTIFICATION_TTL_MS), readBy } },
       { upsert: true }
     );
   } catch (e: any) {
@@ -345,10 +377,34 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
             ? { approval: 1, status: 1, selectedVendorId: 1, purchaseOrder: 1, requestApproval: 1, invitedVendorIds: 1, vendorQuoteTokens: 1, enquiryDispatchedAt: 1 }
             : {};
       const existing = keys.length
-        ? await col.find({ [keyField]: { $in: keys } }, { projection: { [keyField]: 1, _createdAt: 1, ...serverOwned } }).toArray()
+        ? await col
+            .find(
+              { [keyField]: { $in: keys } },
+              // Contracts: the whole stored record is needed to check required fields
+              { projection: collection === 'contractors' ? { _id: 0 } : { [keyField]: 1, _createdAt: 1, ...serverOwned } }
+            )
+            .toArray()
         : [];
       const existingByKey = new Map(existing.map((d: any) => [d[keyField], d]));
       const now = new Date();
+
+      // Contracts must have all required fields. New contracts and complete stored contracts are checked;
+      // older records that were saved incomplete before this rule can still be updated.
+      if (collection === 'contractors') {
+        for (const raw of cleanUpserts) {
+          const errors = validateContract(raw);
+          if (!Object.keys(errors).length) continue;
+          const prev: any = existingByKey.get(raw[keyField]);
+          const prevWasComplete = !prev || !Object.keys(validateContract(prev)).length;
+          if (prevWasComplete) {
+            return res.status(400).json({
+              success: false,
+              error: `Contract "${String(raw.firmName || 'unnamed').slice(0, 80)}" is incomplete: ${firstError(errors as any)}`,
+              fields: errors,
+            });
+          }
+        }
+      }
 
       for (const raw of cleanUpserts) {
         const key = raw[keyField];
@@ -633,6 +689,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         canRespondToOffer:
           existing?.negotiation?.status === 'Offered' && !['Pending Approval', ...CLOSED_PR_STATUSES].includes(pr.status),
         gstRateOptions: GST_RATES,
+        // The quotation was already shared: the vendor cannot share another one
+        alreadyShared: await quoteAlreadyShared(db, pr.id, vendor.id),
         isClosed: Boolean(reason),
         closedReason: reason,
       });
@@ -715,6 +773,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     try {
       const body = req.body || {};
       const { db, pr, vendor } = await resolveVendorInvite(body.pr, body.v, body.t);
+      if (await quoteAlreadyShared(db, pr.id, vendor.id)) throw new HttpError(409, ALREADY_SHARED);
       const reason = closedReason(pr);
       if (reason) throw new HttpError(409, reason);
       const method = String(body.method || '');
@@ -802,11 +861,29 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     await quotes.replaceOne({ id: quote.id }, { ...quote, _createdAt: new Date() }, { upsert: true });
   };
 
-  // Vendor submits (or revises) their quotation: the 10 key figures are mandatory, remarks optional
+  /*
+   * A vendor can share a quotation only ONCE per enquiry. The rule is enforced here (not only in the browser):
+   * - an existing quotation (other than "declined") blocks any new submission, upload or decline;
+   * - a claim document with a fixed _id (unique by definition) makes concurrent / repeated requests safe,
+   *   so double clicks, page refreshes or direct API calls cannot store a second quotation.
+   * Price negotiation (counter-offers) is a separate step and stays available.
+   */
+  const QUOTE_SUBMISSIONS = 'quote_submissions';
+  const ALREADY_SHARED = 'You have already shared your quotation for this enquiry. A quotation can be shared only once.';
+  const claimKey = (prId: string, vendorId: string) => `${prId}|${vendorId}`;
+  const quoteAlreadyShared = async (db: Db, prId: string, vendorId: string): Promise<boolean> => {
+    const existing: any = await db.collection('vendor_quotations').findOne({ prId, vendorId }, { projection: { _id: 0, status: 1 } });
+    if (existing && existing.status !== 'Declined') return true;
+    return Boolean(await db.collection(QUOTE_SUBMISSIONS).findOne({ _id: claimKey(prId, vendorId) as any }));
+  };
+
+  // Vendor submits their quotation (once): the 10 key figures are mandatory, remarks optional
   app.post('/api/vendor-quote', async (req, res) => {
+    let claimed: { db: Db; key: string } | null = null;
     try {
       const body = req.body || {};
       const { db, pr, vendor } = await resolveVendorInvite(body.pr, body.v, body.t);
+      if (await quoteAlreadyShared(db, pr.id, vendor.id)) throw new HttpError(409, ALREADY_SHARED);
       const reason = closedReason(pr);
       if (reason) throw new HttpError(409, reason);
 
@@ -864,20 +941,18 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
         attachment = attachmentMeta(doc);
       }
 
+      // Claim the one allowed submission (a second request for the same vendor + enquiry fails here)
+      const key = claimKey(pr.id, vendor.id);
+      try {
+        await db.collection(QUOTE_SUBMISSIONS).insertOne({ _id: key as any, prId: pr.id, vendorId: vendor.id, at: new Date() });
+        claimed = { db, key };
+      } catch (e: any) {
+        if (e?.code === 11000) throw new HttpError(409, ALREADY_SHARED);
+        throw e;
+      }
+
       const submittedAt = formatTimestamp();
-      // A revised quotation keeps the negotiation history (the new rate is the vendor's latest offer)
-      const previous: any = await db.collection('vendor_quotations').findOne({ prId: pr.id, vendorId: vendor.id }, { projection: { _id: 0, negotiation: 1 } });
-      const negotiation = previous?.negotiation
-        ? {
-            ...previous.negotiation,
-            status: 'Countered',
-            rounds: [...(previous.negotiation.rounds || []), { by: 'vendor', action: 'revise', rate: quotedRate, byName: vendor.name, at: new Date().toISOString() }],
-            version: (previous.negotiation.version || 0) + 1,
-            updatedAt: new Date().toISOString(),
-          }
-        : undefined;
       const quote = {
-        ...(negotiation ? { negotiation } : {}),
         id: `vq-${pr.id}-${vendor.id}`,
         prId: pr.id,
         token: pr.token,
@@ -910,6 +985,7 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       };
 
       await saveVendorQuote(db, pr, quote);
+      claimed = null; // stored: the claim stays and blocks any further submission
       if (attachment) await db.collection(ATTACHMENTS).updateOne({ id: attachment.id }, { $set: { linkedQuoteId: quote.id } });
       await pruneAttachments(db, pr.id, vendor.id, attachment?.id);
       await db
@@ -928,6 +1004,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
       console.log(`[Vendor Quote] ${vendor.name} submitted Rs. ${quotedRate}/${pr.unit}, total Rs. ${totalAmount} for ${pr.id} (${submissionMethod})`);
       return res.json({ success: true, quote: { id: quote.id, submittedAt } });
     } catch (err) {
+      // The quotation was not stored: release the claim so the vendor can try again
+      if (claimed) await claimed.db.collection(QUOTE_SUBMISSIONS).deleteOne({ _id: claimed.key as any }).catch(() => undefined);
       return sendError(res, err, 'Unable to submit your quotation right now. Please try again.');
     }
   });
@@ -937,6 +1015,8 @@ export async function createApp({ serveFrontend = true, scheduleJobs = true }: A
     try {
       const body = req.body || {};
       const { db, pr, vendor } = await resolveVendorInvite(body.pr, body.v, body.t);
+      // A shared quotation cannot be withdrawn by declining (that would allow sharing a second one)
+      if (await quoteAlreadyShared(db, pr.id, vendor.id)) throw new HttpError(409, ALREADY_SHARED);
       const reason = closedReason(pr);
       if (reason) throw new HttpError(409, reason);
       const declineReason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
@@ -2649,9 +2729,14 @@ Use "" for anything you could not find.`;
 
   /** Everything that runs on a schedule: payment reminders, delivery follow-ups, report emails */
   async function runScheduledJobs(): Promise<void> {
-    const results = await Promise.allSettled([runPaymentReminders(), runDeliveryFollowUps(), runScheduledReports()]);
+    const results = await Promise.allSettled([
+      runPaymentReminders(),
+      runDeliveryFollowUps(),
+      runScheduledReports(),
+      getMongoDb().then((db) => purgeExpiredNotifications(db)),
+    ]);
     results.forEach((r, i) => {
-      if (r.status === 'rejected') console.warn(`[Schedule] ${['Payment reminders', 'Delivery follow-ups', 'Report emails'][i]} failed:`, r.reason?.message || r.reason);
+      if (r.status === 'rejected') console.warn(`[Schedule] ${['Payment reminders', 'Delivery follow-ups', 'Report emails', 'Notification clean-up'][i]} failed:`, r.reason?.message || r.reason);
     });
   }
 
@@ -2730,15 +2815,130 @@ Use "" for anything you could not find.`;
     }
   });
 
+  /* ------------------------------------------------------------------ */
+  /* Stock movement logged through "Log Custom Action" (material          */
+  /* allocation log): the stock change and the ledger entry are written  */
+  /* together, once. The transaction id (created when the form opens)    */
+  /* is the idempotency key, so repeated clicks / retries change stock   */
+  /* only once.                                                          */
+  /* ------------------------------------------------------------------ */
+
+  const STOCK_CLAIMS = 'stock_movement_claims';
+
+  app.post('/api/stock/movements', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const tx = body.transaction && typeof body.transaction === 'object' ? { ...body.transaction } : null;
+      if (!tx) throw new HttpError(400, 'The stock entry is missing.');
+      delete tx._id;
+      delete tx._createdAt;
+      const txId = String(tx.id || '');
+      if (!/^tx-[\w-]{6,80}$/.test(txId)) throw new HttpError(400, 'The stock entry reference is invalid. Please reopen the form and try again.');
+      if (!['addition', 'consumption'].includes(tx.type)) throw new HttpError(400, 'Choose whether stock is added or consumed.');
+      const qty = Number(tx.quantity);
+      if (!Number.isFinite(qty) || qty <= 0 || qty > 1e9) throw new HttpError(400, 'Please enter a valid quantity.');
+      if (typeof tx.notes !== 'string' || !tx.notes.trim()) throw new HttpError(400, 'Please enter the reason / note for this stock movement.');
+      if (typeof tx.operator !== 'string' || !tx.operator.trim()) throw new HttpError(400, 'Please enter who recorded this movement.');
+      if (typeof tx.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(tx.date)) throw new HttpError(400, 'Please enter a valid date.');
+
+      const db = await getMongoDb();
+      const materials = db.collection('materials');
+      const txs = db.collection('inventory_transactions');
+      const material: any = await materials.findOne({ id: String(tx.materialId || '') }, { projection: { _id: 0 } });
+      if (!material) throw new HttpError(404, 'This material was not found. Please refresh the page.');
+      // The movement always belongs to the material's own project / site
+      tx.projectId = material.projectId;
+      tx.quantity = qty;
+
+      const current = async () => ({
+        material: await materials.findOne({ id: material.id }, { projection: { _id: 0, _createdAt: 0 } }),
+        transaction: await txs.findOne({ id: txId }, { projection: { _id: 0, _createdAt: 0 } }),
+      });
+
+      // Already recorded (double click, retry, refresh): return the stored result, change nothing
+      if (await db.collection(STOCK_CLAIMS).findOne({ _id: txId as any })) {
+        return res.json({ success: true, duplicate: true, ...(await current()) });
+      }
+
+      // Fields the entry may update on the material (addition only); values are taken literally
+      const set: Record<string, any> = {};
+      const allowed = ['unitCost', 'vendorName', 'billType', 'billNumber', 'gstRate', 'gstAmount', 'baseAmount', 'vendorGstin'];
+      const ms = body.materialSet && typeof body.materialSet === 'object' ? body.materialSet : {};
+      if (tx.type === 'addition') for (const k of allowed) if (ms[k] !== undefined && ms[k] !== null) set[k] = { $literal: ms[k] };
+      const point = tx.type === 'addition' && body.rateHistoryPoint && typeof body.rateHistoryPoint === 'object' ? body.rateHistoryPoint : null;
+
+      const stockUpdate: any[] = [
+        {
+          $set: {
+            ...set,
+            currentStock: { $round: [{ $add: [{ $ifNull: ['$currentStock', 0] }, tx.type === 'addition' ? qty : -qty] }, 3] },
+            ...(point ? { rateHistory: { $concatArrays: [{ $ifNull: ['$rateHistory', []] }, [{ $literal: point }]] } } : {}),
+          },
+        },
+      ];
+      const filter: any = tx.type === 'consumption' ? { id: material.id, currentStock: { $gte: qty } } : { id: material.id };
+
+      const apply = async (session?: any) => {
+        // 1. claim the entry id (unique _id): a second request with the same id fails here
+        await db.collection(STOCK_CLAIMS).insertOne({ _id: txId as any, materialId: material.id, type: tx.type, quantity: qty, at: new Date() }, { session });
+        // 2. change the stock atomically (consumption only if enough stock is available)
+        const upd = await materials.updateOne(filter, stockUpdate, { session });
+        if (upd.matchedCount !== 1) throw new HttpError(409, `Only ${material.currentStock} ${material.unit} of ${material.name} is in stock.`);
+        // 3. ledger entry
+        await txs.replaceOne({ id: txId }, { ...tx, _createdAt: new Date() }, { upsert: true, session });
+      };
+
+      const session = mongoClient?.startSession();
+      try {
+        if (!session) throw Object.assign(new Error('no session'), { code: 20 });
+        await session.withTransaction(() => apply(session));
+      } catch (e: any) {
+        if (e?.code === 11000) return res.json({ success: true, duplicate: true, ...(await current()) });
+        if (e instanceof HttpError) throw e;
+        // Databases without multi-document transactions (standalone server): same steps with undo on failure
+        if (e?.code === 20 || /Transaction numbers|replica set/i.test(String(e?.message))) {
+          try {
+            await apply();
+          } catch (inner: any) {
+            if (inner?.code === 11000) return res.json({ success: true, duplicate: true, ...(await current()) });
+            await db.collection(STOCK_CLAIMS).deleteOne({ _id: txId as any }).catch(() => undefined);
+            throw inner;
+          }
+        } else {
+          throw e;
+        }
+      } finally {
+        await session?.endSession().catch(() => undefined);
+      }
+
+      const result = await current();
+      console.log(`[Stock] ${txId}: ${tx.type === 'addition' ? '+' : '-'}${qty} ${material.unit} ${material.name} (${material.projectId}) -> ${result.material?.currentStock}`);
+      return res.json({ success: true, ...result });
+    } catch (err) {
+      return sendError(res, err, 'Could not record this stock movement. Please try again.');
+    }
+  });
+
   /* ---------------- In-app notifications ---------------- */
+
+  let lastNotificationPurge = 0;
 
   app.get('/api/notifications', async (req, res) => {
     try {
       const userId = String(req.query.userId || '').slice(0, 100);
       const projectId = String(req.query.projectId || '').slice(0, 100);
       const db = await getMongoDb();
-      const filter: any = projectId ? { $or: [{ projectId }, { projectId: { $exists: false } }, { projectId: null }] } : {};
-      const list = await db.collection('notifications').find(filter, { projection: { _id: 0 } }).sort({ createdAt: -1 }).limit(60).toArray();
+      // Clean up expired notifications now and then (also done daily and by the TTL index)
+      if (Date.now() - lastNotificationPurge > 10 * 60 * 1000) {
+        lastNotificationPurge = Date.now();
+        purgeExpiredNotifications(db).catch(() => undefined);
+      }
+      // Only notifications from the last 3 days are listed or counted, even before they are deleted
+      const fresh = { createdAt: { $gte: notificationCutoffIso() } };
+      const filter: any = projectId
+        ? { $and: [fresh, { $or: [{ projectId }, { projectId: { $exists: false } }, { projectId: null }] }] }
+        : fresh;
+      const list = await db.collection('notifications').find(filter, { projection: { _id: 0, expiresAt: 0 } }).sort({ createdAt: -1 }).limit(60).toArray();
       const notifications = list.map((n: any) => {
         const { readBy, ...rest } = n;
         return { ...rest, read: Array.isArray(readBy) && readBy.includes(userId) };

@@ -6,3 +6,107 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-logo: "Archivo Black", "Montserrat", "Arial Black", ui-sans-serif, sans-serif;
 }
+
+/*
+ * Neutral text fields across the whole application.
+ * These rules are deliberately outside Tailwind's layers: unlayered CSS wins over utility classes,
+ * so every input, select and textarea gets the same white / grey look regardless of older coloured
+ * classes (bg-indigo-50, border-red-300, ...). Focus, placeholder, disabled and error states are kept.
+ */
+:where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not([type='hidden']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image'])),
+:where(select, textarea) {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+:where(input, select, textarea)::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+:where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']), select, textarea):focus {
+  border-color: #23408e;
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(35 64 142 / 0.15);
+}
+:where(input, select, textarea):disabled,
+:where(input, textarea)[readonly] {
+  background-color: #f1f5f9;
+  color: #475569;
+  cursor: not-allowed;
+}
+/* Validation: fields marked invalid (aria-invalid or an error border class) keep a red border */
+:where(input, select, textarea)[aria-invalid='true'],
+:where(input, select, textarea)[class*='border-rose'],
+:where(input, select, textarea)[class*='border-red'] {
+  border-color: #e11d48;
+}
+:where(input, select, textarea)[aria-invalid='true']:focus {
+  box-shadow: 0 0 0 3px rgb(225 29 72 / 0.15);
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: #23408e;
+}
+
+/* Main navigation tabs: horizontal scrolling only when they do not fit, with a slim, quiet scrollbar */
+.nav-tabs {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.nav-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+.nav-tabs::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.nav-tabs::-webkit-scrollbar-button {
+  display: none;
+}
+
+/*
+ * Printing the app directly (Ctrl+P): print the content only.
+ * The register / summary "Print" buttons produce their own clean report document.
+ */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+  }
+  header,
+  nav,
+  button,
+  #navigation-tabs,
+  #notification-toasts,
+  .no-print,
+  [role='dialog'] {
+    display: none !important;
+  }
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  * {
+    box-shadow: none !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  table {
+    width: 100% !important;
+    border-collapse: collapse;
+  }
+  tr {
+    break-inside: avoid;
+  }
+  .overflow-x-auto,
+  .overflow-y-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+}

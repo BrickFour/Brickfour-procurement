@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, FormEvent } from 'react';
+import { useState, useMemo, useEffect, useRef, FormEvent } from 'react';
 import { InventoryTransaction, Material, Project } from '../types';
 import {
   Search,
@@ -38,6 +38,11 @@ interface TransactionHistoryProps {
   projects: Project[];
   selectedProjectId: string;
   onAddTransaction: (tx: Omit<InventoryTransaction, 'id' | 'date'> & { date?: string }) => void;
+  /** "Log Custom Action": stock is changed on the server once per entry id (no double additions) */
+  onLogCustomAction: (
+    tx: Omit<InventoryTransaction, 'id' | 'date'> & { date?: string },
+    entryId: string
+  ) => Promise<{ ok: boolean; error?: string; duplicate?: boolean }>;
   onRemoveTransaction: (id: string) => void;
   todayOnlyFilter?: boolean;
   onClearTodayFilter?: () => void;
@@ -91,7 +96,7 @@ export default function TransactionHistory({
   materials,
   projects,
   selectedProjectId,
-  onAddTransaction,
+  onLogCustomAction,
   onRemoveTransaction,
   todayOnlyFilter,
   onClearTodayFilter,
@@ -110,7 +115,14 @@ export default function TransactionHistory({
 
   // Form States
   const [formMaterialId, setFormMaterialId] = useState('');
-  const [formType, setFormType] = useState<'addition' | 'consumption'>('consumption');
+  // A material allocation log adds stock by default; consumption can still be chosen
+  const [formType, setFormType] = useState<'addition' | 'consumption'>('addition');
+  // One id per opened form: re-submitting the same entry (double click, retry) never changes stock twice
+  const newEntryId = () =>
+    `tx-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+  const entryIdRef = useRef<string>(newEntryId());
+  const [logSubmitting, setLogSubmitting] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
   const [formVerification, setFormVerification] = useState<VerificationDraft>(() => newVerificationDraft());
   const [formQty, setFormQty] = useState<number | ''>('');
   const [formRate, setFormRate] = useState<number | ''>('');
@@ -384,8 +396,11 @@ export default function TransactionHistory({
     materials,
   ]);
 
-  const handleLogTransaction = (e: FormEvent) => {
+  const handleLogTransaction = async (e: FormEvent) => {
     e.preventDefault();
+    if (logSubmitting) return;
+    setLogError(null);
+    const alert = (msg: string) => setLogError(msg);
     const qtyNum = Number(formQty);
     if (!formMaterialId || formQty === '' || isNaN(qtyNum) || qtyNum <= 0 || !formOperator.trim()) {
       alert('Please fill in all required fields with valid values.');
@@ -401,7 +416,7 @@ export default function TransactionHistory({
     if (!selectedMat) return;
 
     if (formType === 'consumption' && qtyNum > selectedMat.currentStock) {
-      alert('please insert valid values');
+      alert(`Only ${selectedMat.currentStock} ${selectedMat.unit} of ${selectedMat.name} is in stock.`);
       return;
     }
 
@@ -425,7 +440,8 @@ export default function TransactionHistory({
       ? (formTotalPrice !== '' && !isNaN(Number(formTotalPrice)) && stockQty === qtyNum ? Number(formTotalPrice) : (rateVal! * stockQty))
       : undefined;
 
-    onAddTransaction({
+    setLogSubmitting(true);
+    const result = await onLogCustomAction({
       projectId: selectedMat.projectId,
       materialId: formMaterialId,
       type: formType,
@@ -442,11 +458,18 @@ export default function TransactionHistory({
       vendorName: formType === 'addition' ? (formVendor.trim() || selectedMat.vendorName || 'Authorized Vendor') : undefined,
       invoiceUrl: formType === 'addition' ? formInvoiceUrl : undefined,
       invoiceFileName: formType === 'addition' ? formInvoiceFileName : undefined,
-    });
+    }, entryIdRef.current);
+    setLogSubmitting(false);
+    if (!result.ok) {
+      setLogError(result.error || 'Could not record this stock movement. Please try again.');
+      return;
+    }
+    // Recorded: the next entry gets a new id
+    entryIdRef.current = newEntryId();
 
     // Reset Form
     setFormMaterialId('');
-    setFormType('consumption');
+    setFormType('addition');
     setFormQty('');
     setFormRate('');
     setFormTotalPrice('');
@@ -491,6 +514,8 @@ export default function TransactionHistory({
             if (availableMaterials.length > 0) {
               setFormMaterialId(availableMaterials[0].id);
             }
+            entryIdRef.current = newEntryId();
+            setLogError(null);
             setIsLogOpen(true);
           }}
           className="px-4 py-2.5 rounded-lg bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
@@ -1152,6 +1177,11 @@ export default function TransactionHistory({
                     />
                   </div>
 
+                  {logError && (
+                    <p role="alert" className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                      {logError}
+                    </p>
+                  )}
                   <div className="flex gap-3 pt-4 border-t border-slate-200">
                     <button
                       id="btn-cancel-log-tx"
@@ -1164,9 +1194,10 @@ export default function TransactionHistory({
                     <button
                       id="btn-submit-log-tx"
                       type="submit"
-                      className="flex-1 bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold py-3 rounded-lg transition-colors cursor-pointer"
+                      disabled={logSubmitting}
+                      className="flex-1 bg-[#23408e] hover:bg-[#1b3170] text-white text-sm font-semibold py-3 rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      Record Log
+                      {logSubmitting ? 'Recording...' : 'Record Log'}
                     </button>
                   </div>
                 </form>

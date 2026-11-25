@@ -217,6 +217,8 @@ export default function VendorQuotePortal() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<{ kind: 'submitted' | 'declined'; at: string } | null>(null);
+  // Guards against a second submission from a double click before the button is disabled
+  const submittingRef = useRef(false);
   const [declineOpen, setDeclineOpen] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -279,6 +281,8 @@ export default function VendorQuotePortal() {
           setFigures({ ...EMPTY, quantity: toStr(json.pr.quantity) });
           if (existing?.status === 'Declined') setResult({ kind: 'declined', at: existing.submittedAt });
         }
+        // Already shared once: show the confirmation instead of the form (a quotation can be shared only once)
+        if (json.alreadyShared) setResult({ kind: 'submitted', at: existing?.submittedAt || '' });
       })
       .catch((err) => {
         if (!cancelled) setState({ kind: 'error', message: userMessage(err, 'Unable to open this quotation request. Please check your internet connection and try again.') });
@@ -404,7 +408,7 @@ export default function VendorQuotePortal() {
       status: 'done',
       message:
         n > 0
-          ? `We filled ${n} of 10 key figures from your quotation (highlighted in yellow). Please check them and complete any that are empty.`
+          ? `We filled ${n} of 10 key figures from your quotation. Please check them and complete any that are empty.`
           : 'We could not read the figures automatically. Please fill in the key figures below.',
     });
   };
@@ -467,6 +471,8 @@ export default function VendorQuotePortal() {
       setSubmitError(`Please complete all 10 key figures (${completed} of 10 done).`);
       return;
     }
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setIsSubmitting(true);
     setSubmitError(null);
     try {
@@ -495,10 +501,17 @@ export default function VendorQuotePortal() {
         }),
       });
       const json = await res.json().catch(() => null);
+      if (res.status === 409 && /already shared/i.test(String(json?.error || ''))) {
+        // Shared earlier (another tab, a double click or a refresh): show the confirmation
+        setResult({ kind: 'submitted', at: '' });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       if (!res.ok || !json?.success) throw apiError(json, 'Submission failed. Please try again.');
       setResult({ kind: 'submitted', at: json.quote?.submittedAt || new Date().toLocaleString() });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
+      submittingRef.current = false;
       setSubmitError(userMessage(err, 'Could not send your response. Please check your internet connection and try again.'));
     } finally {
       setIsSubmitting(false);
@@ -580,18 +593,13 @@ export default function VendorQuotePortal() {
   const inputCls = (key: FigureKey) => {
     const invalid = (showErrors && missingKeys.has(key)) || Boolean(fieldError(key));
     return `w-full px-3.5 py-2.5 rounded-lg border text-sm text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#13294b]/30 focus:border-[#13294b] ${
-      invalid ? 'border-rose-400 bg-rose-50/50' : autoFilled.has(key) ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-white'
+      invalid ? 'border-rose-400 bg-white' : 'border-slate-300 bg-white'
     }`;
   };
 
   const FieldLabel = ({ htmlFor, children, k }: { htmlFor: string; children: React.ReactNode; k: FigureKey }) => (
     <label htmlFor={htmlFor} className="flex items-center justify-between gap-2 text-sm font-semibold text-slate-800 mb-1.5">
       <span>{children}</span>
-      {autoFilled.has(k) && (
-        <span className="text-amber-600 shrink-0" title="Filled from your quotation - please check" aria-label="Filled from your quotation">
-          <Sparkles size={13} />
-        </span>
-      )}
     </label>
   );
   const Err = ({ k }: { k: FigureKey }) =>
@@ -736,15 +744,14 @@ export default function VendorQuotePortal() {
           {result.kind === 'submitted' ? (
             <>
               <CheckCircle2 size={36} className="mx-auto text-emerald-600" />
-              <h2 className="mt-3 text-lg font-semibold text-slate-900">Quotation submitted</h2>
+              <h2 className="mt-3 text-lg font-semibold text-slate-900">Quotation shared</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Thank you. We received your quotation on {result.at}. Total price: {inr(Number(figures.totalAmount) || 0)}.
+                Thank you. We received your quotation{result.at ? ` on ${result.at}` : ''}
+                {Number(figures.totalAmount) > 0 ? `. Total price: ${inr(Number(figures.totalAmount))}` : ''}.
               </p>
-              {!closed && (
-                <button type="button" onClick={() => setResult(null)} className="mt-5 px-4 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-800 hover:bg-slate-50 cursor-pointer">
-                  Revise quotation
-                </button>
-              )}
+              <p className="mt-3 text-sm text-slate-500">
+                A quotation can be shared only once. If something needs to change, please contact the procurement team.
+              </p>
             </>
           ) : (
             <>
@@ -768,12 +775,8 @@ export default function VendorQuotePortal() {
       ) : (
         <form onSubmit={handleSubmit} noValidate className="bg-white rounded-xl border border-slate-200 shadow-sm">
           <div className="px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-base font-semibold text-slate-900">
-              {existingQuote && existingQuote.status !== 'Declined' ? 'Update your quotation' : 'Submit your quotation'}
-            </h2>
-            {existingQuote && existingQuote.status !== 'Declined' && (
-              <span className="text-xs text-slate-500">Last submitted {existingQuote.submittedAt}</span>
-            )}
+            <h2 className="text-base font-semibold text-slate-900">Submit your quotation</h2>
+            <span className="text-xs text-slate-500">You can share your quotation once, so please check it before submitting.</span>
           </div>
 
           <div className="p-6 space-y-6">
@@ -853,13 +856,15 @@ export default function VendorQuotePortal() {
                   </p>
                 ) : (
                   <>
-                    <Upload size={22} className="mx-auto text-slate-500" />
-                    <p className="mt-2 text-sm text-slate-700">
-                      Drag and drop your file here, or{' '}
-                      <button type="button" onClick={() => fileInputRef.current?.click()} className="font-semibold text-[#1d4f91] hover:underline cursor-pointer">
-                        browse
-                      </button>
-                    </p>
+                    <button
+                      type="button"
+                      id="vq-upload"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full px-4 py-3 rounded-lg bg-[#13467f] hover:bg-[#0f3a6b] text-white text-base font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Upload size={18} /> Upload file
+                    </button>
+                    <p className="text-sm text-slate-600 mt-2">or drag and drop your file here</p>
                     <p className="text-xs text-slate-500 mt-1">{activeMethod.hint}. We'll read it and fill in the key figures for you.</p>
                   </>
                 )}
@@ -881,7 +886,7 @@ export default function VendorQuotePortal() {
             {reading.message && (
               <p
                 role={reading.status === 'error' ? 'alert' : 'status'}
-                className={`text-sm ${reading.status === 'error' ? 'text-rose-700' : 'text-amber-800'}`}
+                className={`text-sm ${reading.status === 'error' ? 'text-rose-700' : 'text-slate-700'}`}
               >
                 {reading.message}
               </p>
@@ -1018,7 +1023,7 @@ export default function VendorQuotePortal() {
               <button type="submit" disabled={isSubmitting || reading.status === 'busy'}
                 className="px-6 py-3 rounded-lg bg-[#13467f] hover:bg-[#0f3a6b] text-white text-base font-semibold disabled:opacity-60 cursor-pointer inline-flex items-center gap-2">
                 {isSubmitting && <Loader2 size={16} className="animate-spin" />}
-                {existingQuote && existingQuote.status !== 'Declined' ? 'Update Quotation' : 'Submit Quotation'}
+                {isSubmitting ? 'Sharing...' : 'Submit Quotation'}
               </button>
             </div>
           </div>

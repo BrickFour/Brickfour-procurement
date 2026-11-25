@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { downloadCsv, printReport, fileSafe, todayIso, inr } from '../lib/exportUtils';
 import { Material, InventoryTransaction, Project, User } from '../types';
 import {
   aggregateMaterialsByCode,
@@ -217,43 +218,66 @@ export default function MaterialCodeSummary({
     setEditingMaterial(null);
   };
 
-  // Export to CSV
+  const scopeLabel = () => (selectedProjectId === 'all' ? 'All projects' : getProjectName(selectedProjectId));
+  const summaryFilters = (): [string, string][] => [
+    ['Project', scopeLabel()],
+    ...(selectedCategory !== 'All' ? ([['Category', selectedCategory]] as [string, string][]) : []),
+    ...(searchQuery.trim() ? ([['Search', searchQuery.trim()]] as [string, string][]) : []),
+  ];
+
+  // Export to CSV (valid in Excel and Google Sheets: quoted fields, UTF-8, codes kept as text e.g. "#001")
   const handleExportCSV = () => {
-    const rows = [
-      ['Material Code', 'Group Name', 'Category', 'Variants Count', 'Available Stock', 'Unit Cost (Avg Rs.)', 'Stock Valuation (Rs.)', 'Total Price Invested (Rs.)', 'Total Inward (Rs.)', 'Total Consumed (Rs.)', 'Site Projects'],
+    const headers = [
+      'Material Code', 'Group Name', 'Category', 'Variants', 'Variant Names', 'Available Stock', 'Average Unit Cost (Rs)',
+      'Stock Valuation (Rs)', 'Total Invested (Rs)', 'Total Inward (Rs)', 'Total Consumed (Rs)', 'Low Stock', 'Site Projects',
     ];
-
-    codeGroups.forEach((g) => {
-      rows.push([
-        `="${g.code}"`,
-        `"${g.groupName.replace(/"/g, '""')}"`,
-        `"${g.category}"`,
-        String(g.totalVariantsCount),
-        `"${g.unitSummaryText}"`,
-        String(g.averageUnitCost),
-        String(Math.round(g.currentStockValuation)),
-        String(Math.round(g.totalInvestedAmount)),
-        String(Math.round(g.totalInwardAmount)),
-        String(Math.round(g.totalConsumedAmount)),
-        `"${g.projectIds.map(getProjectName).join('; ')}"`,
-      ]);
-    });
-
-    const csvContent = 'data:text/csv;charset=utf-8,' + rows.map((e) => e.join(',')).join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `material_code_summary_${selectedProjectId}_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const rows = codeGroups.map((g) => [
+      `#${g.code}`,
+      g.groupName,
+      g.category,
+      g.totalVariantsCount,
+      g.uniqueVariantNames.join('; '),
+      g.unitSummaryText,
+      Math.round(g.averageUnitCost * 100) / 100,
+      Math.round(g.currentStockValuation),
+      Math.round(g.totalInvestedAmount),
+      Math.round(g.totalInwardAmount),
+      Math.round(g.totalConsumedAmount),
+      g.isLowStock ? 'Yes' : 'No',
+      g.projectIds.map(getProjectName).join('; '),
+    ]);
+    downloadCsv(`Material_Code_Summary_${fileSafe(scopeLabel())}_${todayIso()}.csv`, headers, rows);
   };
 
-  // Print Report
+  // Print Report: a clean A4 document with the visible code groups and totals
   const handlePrint = () => {
-    window.print();
+    printReport({
+      title: 'Material Code Summary & Investment Ledger',
+      subtitle: 'Material codes with available stock, valuation and total investment.',
+      meta: summaryFilters(),
+      landscape: true,
+      summary: [
+        ['Codes', String(overallStats.totalCodes)],
+        ['Variants', String(overallStats.totalVariants)],
+        ['Stock valuation', inr(overallStats.totalStockValuation, 0)],
+        ['Total invested', inr(overallStats.totalInvested, 0)],
+        ['Low-stock codes', String(overallStats.lowStockCodes)],
+      ],
+      columns: [
+        { header: 'Code' }, { header: 'Group' }, { header: 'Category' }, { header: 'Variants', align: 'right' }, { header: 'Available Stock' },
+        { header: 'Avg Unit Cost', align: 'right' }, { header: 'Valuation', align: 'right' }, { header: 'Invested', align: 'right' },
+        { header: 'Inward', align: 'right' }, { header: 'Consumed', align: 'right' }, { header: 'Sites' },
+      ],
+      rows: codeGroups.map((g) => [
+        `#${g.code}`, g.groupName, g.category, g.totalVariantsCount, g.unitSummaryText, inr(g.averageUnitCost), inr(g.currentStockValuation, 0),
+        inr(g.totalInvestedAmount, 0), inr(g.totalInwardAmount, 0), inr(g.totalConsumedAmount, 0), g.projectIds.map(getProjectName).join(', '),
+      ]),
+      totals: [
+        'Total', '', '', overallStats.totalVariants, '', '', inr(overallStats.totalStockValuation, 0), inr(overallStats.totalInvested, 0),
+        inr(overallStats.totalInwardAmount, 0), inr(overallStats.totalConsumedAmount, 0), '',
+      ],
+    });
   };
-
   return (
     <div className="space-y-5 animate-in fade-in duration-200" id="material-code-summary-container">
       {/* Toast Notification */}

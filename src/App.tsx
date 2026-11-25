@@ -1250,6 +1250,99 @@ export default function App() {
   };
 
   // Action: Add a Transaction (either addition or consumption)
+  /**
+   * "Log Custom Action" (material allocation log): the server changes the stock and stores the ledger entry
+   * together, once per entry id, so repeated clicks or retries never add stock twice.
+   */
+  const handleLogCustomAction = async (
+    newTx: Omit<InventoryTransaction, 'id' | 'date'> & { date?: string },
+    entryId: string
+  ): Promise<{ ok: boolean; error?: string; duplicate?: boolean }> => {
+    const targetMat = materials.find((m) => m.id === newTx.materialId);
+    if (!targetMat) return { ok: false, error: 'Please choose a material.' };
+    if (!newTx.notes?.trim()) return { ok: false, error: 'Please insert a compulsory reason / note for this stock movement.' };
+    if (newTx.type === 'consumption' && newTx.quantity > targetMat.currentStock) {
+      return { ok: false, error: `Only ${targetMat.currentStock} ${targetMat.unit} of ${targetMat.name} is in stock.` };
+    }
+    const txDate = newTx.date || new Date().toISOString().split('T')[0];
+    const computedTotal = newTx.totalPrice !== undefined ? newTx.totalPrice : newTx.rate && newTx.quantity ? newTx.rate * newTx.quantity : 0;
+    const billType: BillType = newTx.billType || targetMat.billType || 'GST';
+    const gstRate = billType === 'GST' ? (newTx.gstRate !== undefined ? newTx.gstRate : targetMat.gstRate || 18) : 0;
+    const baseAmount = newTx.baseAmount !== undefined ? newTx.baseAmount : billType === 'GST' ? Number((computedTotal / (1 + gstRate / 100)).toFixed(2)) : computedTotal;
+    const gstAmount = newTx.gstAmount !== undefined ? newTx.gstAmount : Number((computedTotal - baseAmount).toFixed(2));
+    const transaction: InventoryTransaction = {
+      id: entryId,
+      projectId: targetMat.projectId,
+      materialId: targetMat.id,
+      type: newTx.type,
+      quantity: newTx.quantity,
+      date: txDate,
+      notes: newTx.notes.trim(),
+      operator: newTx.operator,
+      rate: newTx.rate,
+      totalPrice: computedTotal,
+      baseAmount,
+      gstRate,
+      gstAmount,
+      billType,
+      billNumber: newTx.billNumber || targetMat.billNumber,
+      vendorGstin: newTx.vendorGstin || targetMat.vendorGstin,
+      vendorName: newTx.vendorName || targetMat.vendorName,
+      invoiceUrl: newTx.invoiceUrl,
+      invoiceFileName: newTx.invoiceFileName,
+      ...(newTx.type === 'addition' && newTx.verification ? { verification: newTx.verification } : {}),
+    };
+    const isPricedAddition = newTx.type === 'addition' && Boolean(newTx.rate && newTx.rate > 0);
+    try {
+      const res = await fetch('/api/stock/movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transaction: JSON.parse(JSON.stringify(transaction)),
+          materialSet:
+            newTx.type === 'addition'
+              ? {
+                  ...(isPricedAddition ? { unitCost: newTx.rate } : {}),
+                  ...(newTx.vendorName ? { vendorName: newTx.vendorName } : {}),
+                  ...(newTx.billType ? { billType: newTx.billType } : {}),
+                  ...(newTx.billNumber ? { billNumber: newTx.billNumber } : {}),
+                  gstRate,
+                  gstAmount,
+                  baseAmount,
+                  ...(newTx.vendorGstin ? { vendorGstin: newTx.vendorGstin } : {}),
+                }
+              : undefined,
+          rateHistoryPoint: isPricedAddition
+            ? {
+                id: `rh-${entryId}`,
+                date: txDate,
+                rate: newTx.rate,
+                quantity: newTx.quantity,
+                totalPrice: computedTotal,
+                baseAmount,
+                gstRate,
+                gstAmount,
+                billType,
+                billNumber: newTx.billNumber || targetMat.billNumber,
+                vendorGstin: newTx.vendorGstin || targetMat.vendorGstin,
+                vendorName: newTx.vendorName || targetMat.vendorName,
+                notes: transaction.notes,
+              }
+            : undefined,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) return { ok: false, error: apiError(json, 'Could not record this stock movement. Please try again.').message };
+      // Use the server's stored copy: the stock was changed exactly once on the server
+      const savedTx: InventoryTransaction = json.transaction || transaction;
+      if (json.material) setMaterials((prev) => prev.map((m) => (m.id === json.material.id ? (json.material as Material) : m)));
+      setTransactions((prev) => (prev.some((t) => t.id === savedTx.id) ? prev : [savedTx, ...prev]));
+      return { ok: true, duplicate: Boolean(json.duplicate) };
+    } catch {
+      return { ok: false, error: 'Could not record this stock movement. Please check your internet connection and try again.' };
+    }
+  };
+
   const handleAddTransaction = (newTx: Omit<InventoryTransaction, 'id' | 'date'> & { date?: string }) => {
     if (!newTx.notes || !newTx.notes.trim()) {
       alert('Please insert a compulsory reason / note for this stock movement.');
@@ -1576,7 +1669,8 @@ export default function App() {
         )}
 
         {/* Modular Navigation Tabs with indicators */}
-        <div className="flex gap-1 border-b border-slate-200 mt-2 overflow-x-auto" id="navigation-tabs">
+        {/* Tabs scroll sideways on narrow screens only; no vertical scrollbar (the active tab's -mb-px border used to trigger one) */}
+        <div className="nav-tabs flex gap-1 border-b border-slate-200 mt-2 overflow-x-auto overflow-y-hidden" id="navigation-tabs">
           {!isDepartment && (
           <button
             id="tab-catalog"
@@ -1591,11 +1685,7 @@ export default function App() {
             }`}
           >
             <BookOpen size={14} />
-            Procurements ({
-              selectedProjectId === 'all'
-                ? userVisibleMaterials.length
-                : userVisibleMaterials.filter(m => m.projectId === selectedProjectId).length
-            })
+            Procurements
           </button>
           )}
 
@@ -1609,17 +1699,7 @@ export default function App() {
             }`}
           >
             <ShoppingCart size={14} />
-            {isDepartment ? 'Purchase Requests' : `Order Queries & Quotes (${prs.length})`}
-            {!isDepartment && prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed' && p.status !== 'Request Rejected').length > 0 && (
-              <span className="ml-1 px-2 py-0.5 text-[10px] bg-[#23408e] text-white rounded-full font-semibold">
-                {prs.filter((p) => p.status !== 'Awarded' && p.status !== 'Closed' && p.status !== 'Request Rejected').length} Active
-              </span>
-            )}
-            {currentUser.role === 'admin' && prs.some((p) => p.status === 'Awaiting Admin Approval') && (
-              <span className="ml-1 px-2 py-0.5 text-[10px] bg-amber-100 text-amber-900 border border-amber-300 rounded-full font-semibold">
-                {prs.filter((p) => p.status === 'Awaiting Admin Approval').length} to approve
-              </span>
-            )}
+            {isDepartment ? 'Purchase Requests' : 'Order Queries & Quotes'}
           </button>
 
           {!isDepartment && (
@@ -1634,11 +1714,7 @@ export default function App() {
             }`}
           >
             <Building2 size={14} />
-            Contracts ({
-              selectedProjectId === 'all'
-                ? userVisibleContractors.length
-                : userVisibleContractors.filter(c => c.projectId === selectedProjectId).length
-            })
+            Contracts
           </button>
 
           <button
@@ -1651,7 +1727,7 @@ export default function App() {
             }`}
           >
             <Truck size={14} />
-            Internal Transfer ({userVisibleTransfers.length})
+            Internal Transfer
           </button>
 
           <button
@@ -1693,11 +1769,7 @@ export default function App() {
             }`}
           >
             <History size={14} />
-            Daily Ledger ({
-              selectedProjectId === 'all'
-                ? userVisibleTransactions.length
-                : userVisibleTransactions.filter(t => t.projectId === selectedProjectId).length
-            })
+            Daily Ledger
           </button>
 
           <button
@@ -1710,12 +1782,7 @@ export default function App() {
             }`}
           >
             <MessageSquare size={14} />
-            Query Material & Issues ({userVisibleQueries.length})
-            {userVisibleQueries.filter((q) => q.status === 'Open').length > 0 && (
-              <span className="ml-1 px-2 py-0.5 text-[10px] bg-amber-50 text-amber-800 border border-amber-200 rounded-full font-semibold">
-                {userVisibleQueries.filter((q) => q.status === 'Open').length} Open
-              </span>
-            )}
+            Query Material & Issues
           </button>
 
           <button
@@ -1962,6 +2029,7 @@ export default function App() {
                   projects={userVisibleProjects}
                   selectedProjectId={selectedProjectId}
                   onAddTransaction={handleAddTransaction}
+                  onLogCustomAction={handleLogCustomAction}
                   onRemoveTransaction={handleRemoveTransaction}
                   todayOnlyFilter={todayTxFilter}
                   onClearTodayFilter={() => setTodayTxFilter(false)}

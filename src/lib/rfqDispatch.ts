@@ -45,7 +45,7 @@ Please open your secure quotation link below to submit your commercial quotation
 
 ${portalUrl}
 
-This link is unique to your company. Please do not forward it.
+This link is unique to your company. A quotation can be shared only once. Please do not forward it.
 
 Issued by:
 ${sender.name} (${sender.title || 'Procurement Team'})
@@ -93,7 +93,7 @@ ${sender.name} (${sender.title || 'Procurement Team'})
     cta: {
       label: 'Submit Quotation',
       url: portalUrl,
-      note: 'This link is unique to your company. You can use it again to revise your quotation until the enquiry is awarded. Please do not forward this email.',
+      note: 'This link is unique to your company. A quotation can be shared only once, so please check it before submitting. Please do not forward this email.',
     },
     closing: ['Regards,', sender.name, sender.title || 'Procurement Team'],
   });

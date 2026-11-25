@@ -809,11 +809,11 @@ export default function InternalTransfer({
                     {/* Outward From (Source Site Dropdown) */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <label htmlFor="transfer-outward-site" className="block text-[11px] font-bold text-red-800 uppercase tracking-wider">
-                          Outward From (Source Site) *
+                        <label htmlFor="transfer-outward-site" className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                          From (Source Site) *
                         </label>
-                        <span className="px-1.5 py-0.5 bg-red-100 text-red-900 text-[9px] font-black rounded-xs uppercase">
-                          Dispatch Site
+                        <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 text-[9px] font-bold rounded-xs uppercase">
+                          Dispatch
                         </span>
                       </div>
                       <select
@@ -828,7 +828,7 @@ export default function InternalTransfer({
                             setFormInwardProjectId(availIn[0].id);
                           }
                         }}
-                        className="w-full bg-red-50 border border-red-300 text-red-950 text-xs font-extrabold rounded-xl px-3 py-2.5 focus:outline-hidden focus:border-red-700 cursor-pointer"
+                        className="w-full bg-white border border-slate-300 text-slate-900 text-xs font-semibold rounded-xl px-3 py-2.5 focus:outline-hidden focus:border-[#23408e] cursor-pointer"
                       >
                         {projects.map((p) => (
                           <option key={p.id} value={p.id}>
@@ -840,15 +840,20 @@ export default function InternalTransfer({
 
                     {/* Inward To - DROPDOWN OF ALL ONGOING PROJECTS */}
                     <div>
-                      <label htmlFor="transfer-inward-site" className="block text-[11px] font-bold text-emerald-800 uppercase tracking-wider mb-1">
-                        Inward To (Receiving Site Dropdown) *
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label htmlFor="transfer-inward-site" className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                          To (Receiving Site) *
+                        </label>
+                        <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 text-[9px] font-bold rounded-xs uppercase">
+                          Receiving
+                        </span>
+                      </div>
                       <select
                         id="transfer-inward-site"
                         required
                         value={formInwardProjectId}
                         onChange={(e) => setFormInwardProjectId(e.target.value)}
-                        className="w-full bg-white border border-emerald-300 text-emerald-950 text-xs font-extrabold rounded-xl px-3 py-2.5 focus:outline-hidden focus:border-emerald-700 cursor-pointer"
+                        className="w-full bg-white border border-slate-300 text-slate-900 text-xs font-semibold rounded-xl px-3 py-2.5 focus:outline-hidden focus:border-[#23408e] cursor-pointer"
                       >
                         {ongoingInwardProjects.length === 0 ? (
                           <option value="">No other ongoing projects available</option>
@@ -975,7 +980,7 @@ export default function InternalTransfer({
                     <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
                       Calculated Amount
                     </label>
-                    <div className="w-full bg-indigo-50 border border-indigo-200 text-indigo-950 font-black text-xs rounded-xl px-3 py-2 flex items-center">
+                    <div className="w-full bg-slate-100 border border-slate-200 text-slate-900 font-bold text-xs rounded-xl px-3 py-2 flex items-center">
                       {fmtCurr((Number(formQuantity) || 0) * (Number(formRate) || 0))}
                     </div>
                   </div>

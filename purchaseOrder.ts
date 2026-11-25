@@ -131,12 +131,25 @@ export async function renderPurchaseOrderPdf(po: PurchaseOrderData): Promise<Buf
   const logo = findLogoPath();
   let x = L;
   if (logo) {
-    doc.image(logo, L, 36, { height: 58 });
-    x = L + 58 * (400 / 456) + 12; // logo aspect ratio 400x456
+    // Fit the logo in a 140 x 52 box using its real proportions, then start the company block after it
+    // (a fixed ratio from an older portrait logo made the company name overlap the Brickfour logo)
+    let lw = 140;
+    let lh = 52;
+    try {
+      const img: any = (doc as any).openImage(logo);
+      const scale = Math.min(140 / img.width, 52 / img.height);
+      lw = img.width * scale;
+      lh = img.height * scale;
+    } catch {
+      // unreadable size: keep the box
+    }
+    doc.image(logo, L, 38, { width: lw, height: lh });
+    x = L + lw + 14;
   }
-  doc.font('Helvetica-Bold').fontSize(15).fillColor(NAVY).text(po.company.name.toUpperCase(), x, 40, { width: 270 });
+  const companyW = Math.max(150, 322 - x); // stays clear of the PURCHASE ORDER block on the right
+  doc.font('Helvetica-Bold').fontSize(14).fillColor(NAVY).text(po.company.name.toUpperCase(), x, 40, { width: companyW });
   doc.font('Helvetica').fontSize(8).fillColor(MUTED);
-  for (const line of po.company.lines) doc.text(line, x, doc.y + 1, { width: 270 });
+  for (const line of po.company.lines) doc.text(line, x, doc.y + 1, { width: companyW });
 
   doc.font('Helvetica-Bold').fontSize(18).fillColor(NAVY).text('PURCHASE ORDER', 330, 38, { width: R - 330, align: 'right' });
   const meta: [string, string][] = [

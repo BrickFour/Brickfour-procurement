@@ -2,6 +2,16 @@ import { useState, useMemo, FormEvent } from 'react';
 import { ContractorRecord, ContractorCategory, Project, User, ContractorBill } from '../types';
 import { Search, Filter, Plus, FileText, ArrowUpRight, HelpCircle, ShieldCheck, X, CheckCircle2, Clock, AlertTriangle, Building2, UserCheck, DollarSign, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { validateContract, validateContractBill, ContractErrors, BillErrors } from '../lib/contractValidation';
+
+/** Validation message shown under a contract field */
+function FieldError({ id, message }: { id: string; message?: string }) {
+  return message ? (
+    <p id={id} role="alert" className="mt-1 text-[11px] font-medium text-rose-700">
+      {message}
+    </p>
+  ) : null;
+}
 
 interface ProcurementContractsProps {
   contractors: ContractorRecord[];
@@ -89,6 +99,12 @@ export default function ProcurementContracts({
 
   const isAdmin = currentUser?.role === 'admin';
 
+  // Validation messages (all contract fields are mandatory; same rules as the server)
+  const [addErrors, setAddErrors] = useState<ContractErrors & { customCategory?: string }>({});
+  const [actionErrors, setActionErrors] = useState<ContractErrors>({});
+  const [billErrors, setBillErrors] = useState<BillErrors>({});
+  const invalid = (msg?: string) => (msg ? { 'aria-invalid': true as const } : {});
+
   // Filter contractors based on project, category, search query
   const filteredContractors = useMemo(() => {
     return contractors.filter((c) => {
@@ -136,29 +152,44 @@ export default function ProcurementContracts({
   // Handle Add Contractor Submit
   const handleAddContractorSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!newFirmName.trim()) return;
 
-    const targetProjId = newProjectId || (selectedProjectId !== 'all' ? selectedProjectId : projects[0]?.id || 'p-1');
+    const targetProjId = newProjectId || (selectedProjectId !== 'all' ? selectedProjectId : projects[0]?.id || '');
     const targetProj = projects.find((p) => p.id === targetProjId);
 
-    const finalCategory = newCategory === 'Others' ? (customCategory.trim() || 'Others') : newCategory;
-    const estVal = Number(newTotalEstimated) || 0;
-    const pastVal = Number(newPastBilling) || 0;
-    const currVal = Number(newCurrentBilling) || 0;
+    const finalCategory = newCategory === 'Others' ? customCategory.trim() : newCategory;
+    const estVal = newTotalEstimated === '' ? NaN : Number(newTotalEstimated);
+    const pastVal = newPastBilling === '' ? NaN : Number(newPastBilling);
+    const currVal = newCurrentBilling === '' ? NaN : Number(newCurrentBilling);
 
-    onAddContractor({
+    const draft = {
       firmName: newFirmName.trim(),
       category: finalCategory,
-      projectId: targetProjId,
-      projectName: targetProj?.name || 'Site Project',
-      contactPerson: newContactPerson.trim() || undefined,
-      phone: newPhone.trim() || undefined,
-      email: newEmail.trim() || undefined,
+      projectId: targetProj ? targetProjId : '',
+      projectName: targetProj?.name || '',
+      contactPerson: newContactPerson.trim(),
+      phone: newPhone.trim(),
+      email: newEmail.trim(),
       totalEstimatedBilling: estVal,
       pastBilling: pastVal,
       currentBilling: currVal,
-      currentBillingStatus: 'Submitted',
+      currentBillingStatus: 'Submitted' as const,
       statusReason: 'Initial contract mobilization',
+      pastBills: [] as ContractorBill[],
+    };
+    const errors: ContractErrors & { customCategory?: string } = validateContract(draft);
+    if (newCategory === 'Others' && !customCategory.trim()) {
+      delete errors.category;
+      errors.customCategory = 'Enter the category name.';
+    }
+    setAddErrors(errors);
+    if (Object.keys(errors).length) {
+      // Move the cursor to the first field that needs attention
+      setTimeout(() => (document.querySelector('#add-contractor-form [aria-invalid="true"]') as HTMLElement | null)?.focus(), 0);
+      return;
+    }
+
+    onAddContractor({
+      ...draft,
       pastBills: pastVal > 0 ? [
         {
           id: `bill-${Date.now()}-0`,
@@ -181,31 +212,43 @@ export default function ProcurementContracts({
     setNewTotalEstimated(5000000);
     setNewPastBilling(1000000);
     setNewCurrentBilling(250000);
+    setAddErrors({});
     setIsAddContractorOpen(false);
   };
 
-  // Handle Action Modal Update
+  // Handle Action Modal Update (current bill amount, status and reason are all required)
   const handleActionUpdate = () => {
     if (!activeActionContractor) return;
 
-    const newCurrAmount = actionCurrentAmount !== '' ? Number(actionCurrentAmount) : activeActionContractor.currentBilling;
+    const newCurrAmount = actionCurrentAmount === '' ? NaN : Number(actionCurrentAmount);
+    const all = validateContract({ ...activeActionContractor, currentBilling: newCurrAmount, currentBillingStatus: actionStatus, statusReason: actionReason });
+    const errors: ContractErrors = {
+      ...(all.currentBilling ? { currentBilling: all.currentBilling } : {}),
+      ...(all.currentBillingStatus ? { currentBillingStatus: all.currentBillingStatus } : {}),
+      ...(all.statusReason ? { statusReason: all.statusReason } : {}),
+    };
+    setActionErrors(errors);
+    if (Object.keys(errors).length) return;
 
     onUpdateContractorBilling(activeActionContractor.id, {
       currentBilling: newCurrAmount,
       currentBillingStatus: actionStatus,
-      statusReason: actionReason.trim() || undefined,
+      statusReason: actionReason.trim(),
     });
 
     setActiveActionContractor(null);
   };
 
-  // Handle Add Past Bill Entry
+  // Handle Add Past Bill Entry (bill number, date, amount and status are required)
   const handleAddPastBillSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!activePastBillsContractor || !newBillAmount) return;
+    if (!activePastBillsContractor) return;
+    const errors = validateContractBill({ billNumber: newBillNumber, date: newBillDate, amount: newBillAmount === '' ? NaN : Number(newBillAmount), status: newBillStatus });
+    setBillErrors(errors);
+    if (Object.keys(errors).length) return;
 
     const billAmt = Number(newBillAmount);
-    const billNo = newBillNumber.trim() || `RA-BILL-${(activePastBillsContractor.pastBills.length + 1).toString().padStart(2, '0')}`;
+    const billNo = newBillNumber.trim();
 
     onUpdateContractorBilling(activePastBillsContractor.id, {
       newPastBill: {
@@ -421,6 +464,7 @@ export default function ProcurementContracts({
                             id={`btn-action-status-${c.id}`}
                             onClick={() => {
                               setActiveActionContractor(c);
+                              setActionErrors({});
                               setActionStatus(c.currentBillingStatus);
                               setActionReason(c.statusReason || '');
                               setActionCurrentAmount(c.currentBilling);
@@ -554,14 +598,17 @@ export default function ProcurementContracts({
                   <h3 className="text-base font-extrabold text-slate-950">Add New Contracting Firm</h3>
                 </div>
                 <button
-                  onClick={() => setIsAddContractorOpen(false)}
+                  onClick={() => {
+                    setIsAddContractorOpen(false);
+                    setAddErrors({});
+                  }}
                   className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <form onSubmit={handleAddContractorSubmit} className="space-y-4">
+              <form id="add-contractor-form" noValidate onSubmit={handleAddContractorSubmit} className="space-y-4">
                 <div>
                   <label htmlFor="add-firm-name" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Contracting Firm Name *
@@ -573,8 +620,10 @@ export default function ProcurementContracts({
                     value={newFirmName}
                     onChange={(e) => setNewFirmName(e.target.value)}
                     placeholder="e.g. Apex Structural Concrete Ltd"
+                    {...invalid(addErrors.firmName)}
                     className="w-full bg-white border border-slate-300 text-slate-950 text-sm rounded-xl px-3.5 py-2.5 focus:outline-hidden focus:border-[#23408e] font-bold"
                   />
+                  <FieldError id="err-firm-name" message={addErrors.firmName} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -612,13 +661,14 @@ export default function ProcurementContracts({
                         </option>
                       ))}
                     </select>
+                    <FieldError id="err-project" message={addErrors.projectId} />
                   </div>
                 </div>
 
                 {newCategory === 'Others' && (
                   <div>
                     <label htmlFor="add-custom-cat" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                      Custom Category Name
+                      Custom Category Name *
                     </label>
                     <input
                       id="add-custom-cat"
@@ -626,15 +676,17 @@ export default function ProcurementContracts({
                       value={customCategory}
                       onChange={(e) => setCustomCategory(e.target.value)}
                       placeholder="Specify specialized category"
+                      {...invalid(addErrors.customCategory)}
                       className="w-full bg-white border border-slate-300 text-slate-950 text-sm rounded-xl px-3.5 py-2.5"
                     />
+                    <FieldError id="err-custom-cat" message={addErrors.customCategory} />
                   </div>
                 )}
 
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label htmlFor="add-contact-person" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                      Contact Person
+                      Contact Person *
                     </label>
                     <input
                       id="add-contact-person"
@@ -642,12 +694,14 @@ export default function ProcurementContracts({
                       value={newContactPerson}
                       onChange={(e) => setNewContactPerson(e.target.value)}
                       placeholder="e.g. Ramesh Kumar"
+                      {...invalid(addErrors.contactPerson)}
                       className="w-full bg-white border border-slate-300 text-slate-950 text-xs rounded-xl px-3 py-2"
                     />
+                    <FieldError id="err-contact" message={addErrors.contactPerson} />
                   </div>
                   <div>
                     <label htmlFor="add-phone" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                      Phone Number
+                      Phone Number *
                     </label>
                     <input
                       id="add-phone"
@@ -655,12 +709,14 @@ export default function ProcurementContracts({
                       value={newPhone}
                       onChange={(e) => setNewPhone(e.target.value)}
                       placeholder="+91 9876543210"
+                      {...invalid(addErrors.phone)}
                       className="w-full bg-white border border-slate-300 text-slate-950 text-xs rounded-xl px-3 py-2"
                     />
+                    <FieldError id="err-phone" message={addErrors.phone} />
                   </div>
                   <div>
                     <label htmlFor="add-email" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                      Email Address
+                      Email Address *
                     </label>
                     <input
                       id="add-email"
@@ -668,8 +724,10 @@ export default function ProcurementContracts({
                       value={newEmail}
                       onChange={(e) => setNewEmail(e.target.value)}
                       placeholder="vendor@company.com"
+                      {...invalid(addErrors.email)}
                       className="w-full bg-white border border-slate-300 text-slate-950 text-xs rounded-xl px-3 py-2"
                     />
+                    <FieldError id="err-email" message={addErrors.email} />
                   </div>
                 </div>
 
@@ -687,12 +745,14 @@ export default function ProcurementContracts({
                         required
                         value={newTotalEstimated}
                         onChange={(e) => setNewTotalEstimated(e.target.value === '' ? '' : Number(e.target.value))}
+                        {...invalid(addErrors.totalEstimatedBilling)}
                         className="w-full bg-white border border-slate-300 text-slate-950 text-xs font-black rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-est" message={addErrors.totalEstimatedBilling} />
                     </div>
                     <div>
                       <label htmlFor="add-past-billing" className="block text-[11px] font-bold text-slate-600 mb-1">
-                        Initial Past Billing (Rs)
+                        Initial Past Billing (Rs) *
                       </label>
                       <input
                         id="add-past-billing"
@@ -700,12 +760,14 @@ export default function ProcurementContracts({
                         min="0"
                         value={newPastBilling}
                         onChange={(e) => setNewPastBilling(e.target.value === '' ? '' : Number(e.target.value))}
+                        {...invalid(addErrors.pastBilling)}
                         className="w-full bg-white border border-slate-300 text-slate-950 text-xs font-bold rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-past" message={addErrors.pastBilling} />
                     </div>
                     <div>
                       <label htmlFor="add-curr-billing" className="block text-[11px] font-bold text-slate-600 mb-1">
-                        Current Bill (Rs)
+                        Current Bill (Rs) *
                       </label>
                       <input
                         id="add-curr-billing"
@@ -713,8 +775,10 @@ export default function ProcurementContracts({
                         min="0"
                         value={newCurrentBilling}
                         onChange={(e) => setNewCurrentBilling(e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-full bg-amber-50 border border-amber-300 text-amber-950 text-xs font-black rounded-xl px-3 py-2"
+                        {...invalid(addErrors.currentBilling)}
+                        className="w-full bg-white border border-slate-300 text-slate-950 text-xs font-black rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-curr" message={addErrors.currentBilling} />
                     </div>
                   </div>
                 </div>
@@ -784,7 +848,13 @@ export default function ProcurementContracts({
                 </div>
                 <button
                   id="btn-add-past-bill-entry"
-                  onClick={() => setIsAddBillOpen(!isAddBillOpen)}
+                  onClick={() => {
+                    if (!isAddBillOpen && !newBillNumber.trim()) {
+                      setNewBillNumber(`RA-BILL-${(activePastBillsContractor.pastBills.length + 1).toString().padStart(2, '0')}`);
+                    }
+                    setBillErrors({});
+                    setIsAddBillOpen(!isAddBillOpen);
+                  }}
                   className="px-3 py-2 bg-[#23408e] hover:bg-[#1b3170] text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
                 >
                   <Plus size={14} /> Add Historical Invoice Record
@@ -793,40 +863,66 @@ export default function ProcurementContracts({
 
               {/* Inline Form to Add Past Bill */}
               {isAddBillOpen && (
-                <form onSubmit={handleAddPastBillSubmit} className="p-4 bg-slate-50 border border-slate-300 rounded-xl space-y-3">
+                <form noValidate onSubmit={handleAddPastBillSubmit} className="p-4 bg-slate-50 border border-slate-300 rounded-xl space-y-3">
                   <p className="text-xs font-extrabold text-slate-900">Record New Historic Bill Payment</p>
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Bill Number</label>
+                      <label htmlFor="bill-number" className="block text-[11px] font-bold text-slate-600 mb-1">Bill Number *</label>
                       <input
+                        id="bill-number"
                         type="text"
                         value={newBillNumber}
                         onChange={(e) => setNewBillNumber(e.target.value)}
                         placeholder="RA-BILL-03"
+                        {...invalid(billErrors.billNumber)}
                         className="w-full bg-white border border-slate-300 text-xs font-bold rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-bill-number" message={billErrors.billNumber} />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Billing Date</label>
+                      <label htmlFor="bill-date" className="block text-[11px] font-bold text-slate-600 mb-1">Billing Date *</label>
                       <input
+                        id="bill-date"
                         type="date"
                         value={newBillDate}
                         onChange={(e) => setNewBillDate(e.target.value)}
+                        {...invalid(billErrors.date)}
                         className="w-full bg-white border border-slate-300 text-xs font-medium rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-bill-date" message={billErrors.date} />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Amount (Rs) *</label>
+                      <label htmlFor="bill-amount" className="block text-[11px] font-bold text-slate-600 mb-1">Amount (Rs) *</label>
                       <input
+                        id="bill-amount"
                         type="number" step="any"
                         min="1"
                         required
                         value={newBillAmount}
                         onChange={(e) => setNewBillAmount(e.target.value === '' ? '' : Number(e.target.value))}
                         placeholder="500000"
-                        className="w-full bg-white border border-slate-300 text-xs font-black text-emerald-900 rounded-xl px-3 py-2"
+                        {...invalid(billErrors.amount)}
+                        className="w-full bg-white border border-slate-300 text-xs font-black text-slate-950 rounded-xl px-3 py-2"
                       />
+                      <FieldError id="err-bill-amount" message={billErrors.amount} />
                     </div>
+                  </div>
+                  <div>
+                    <label htmlFor="bill-status" className="block text-[11px] font-bold text-slate-600 mb-1">Bill Status *</label>
+                    <select
+                      id="bill-status"
+                      value={newBillStatus}
+                      onChange={(e) => setNewBillStatus(e.target.value as ContractorBill['status'])}
+                      {...invalid(billErrors.status)}
+                      className="w-full bg-white border border-slate-300 text-xs font-medium rounded-xl px-3 py-2"
+                    >
+                      {(['Approved', 'Paid', 'Pending Review', 'Disputed'] as const).map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                    <FieldError id="err-bill-status" message={billErrors.status} />
                   </div>
                   <div>
                     <label className="block text-[11px] font-bold text-slate-600 mb-1">Bill Remarks / Work Description</label>
@@ -939,7 +1035,7 @@ export default function ProcurementContracts({
               <div className="space-y-4">
                 <div>
                   <label htmlFor="action-curr-amt" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Current Bill Amount (Rs)
+                    Current Bill Amount (Rs) *
                   </label>
                   <input
                     id="action-curr-amt"
@@ -947,8 +1043,10 @@ export default function ProcurementContracts({
                     min="0"
                     value={actionCurrentAmount}
                     onChange={(e) => setActionCurrentAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-amber-50 border border-amber-300 text-amber-950 text-sm font-black rounded-xl px-3.5 py-2.5"
+                    {...invalid(actionErrors.currentBilling)}
+                    className="w-full bg-white border border-slate-300 text-slate-950 text-sm font-black rounded-xl px-3.5 py-2.5"
                   />
+                  <FieldError id="err-action-amount" message={actionErrors.currentBilling} />
                 </div>
 
                 <div>
@@ -971,7 +1069,7 @@ export default function ProcurementContracts({
 
                 <div>
                   <label htmlFor="action-reason-input" className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Reason / Remarks (Optional)
+                    Reason / Remarks *
                   </label>
                   <textarea
                     id="action-reason-input"
@@ -979,8 +1077,10 @@ export default function ProcurementContracts({
                     value={actionReason}
                     onChange={(e) => setActionReason(e.target.value)}
                     placeholder="Enter reason for delay, withholding, audit remarks, or approval note..."
+                    {...invalid(actionErrors.statusReason)}
                     className="w-full bg-white border border-slate-300 text-slate-950 text-xs rounded-xl p-3 focus:outline-hidden focus:border-[#23408e]"
                   />
+                  <FieldError id="err-action-reason" message={actionErrors.statusReason} />
                 </div>
 
                 <div className="flex items-center justify-between pt-3 border-t border-slate-200">

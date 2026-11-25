@@ -148,7 +148,7 @@ export function NearbyVendorSearch({
             <MapPin size={13} className="mt-0.5 shrink-0" />
             <span>Suppliers near {nearLabel}{location ? ` (${location.length > 70 ? `${location.slice(0, 70)}…` : location})` : ''}</span>
           </div>
-          <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+          <div className="divide-y divide-slate-100">
             {nearby.map((s) => (
               <div key={s.name} className="px-3 py-2 text-sm flex items-start gap-2">
                 <div className="flex-1 min-w-0">
@@ -309,7 +309,7 @@ export default function VendorPicker({
           <Sparkles size={13} /> Registered vendors who can supply {pr.materialName.toLowerCase()}
           {loading && <Loader2 size={13} className="animate-spin ml-auto" />}
         </div>
-        <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+        <div className="divide-y divide-slate-100">
           {!loading && suggested.length === 0 && <p className="px-3 py-2 text-xs text-slate-500">None of the registered vendors supply this item.</p>}
           {suggested.map(row)}
           {others.map(row)}

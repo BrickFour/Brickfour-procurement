@@ -73,7 +73,7 @@ export default function NotificationCenter({ currentUser, projectId, onOpen, reg
 
   const pushToasts = (list: AppNotification[]) => {
     if (!list.length) return;
-    setToasts((prev) => [...list, ...prev.filter((t) => !list.some((n) => n.id === t.id))].slice(0, 4));
+    setToasts((prev) => [...list, ...prev.filter((t) => !list.some((n) => n.id === t.id))].slice(0, 3));
     for (const n of list) setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== n.id)), URGENT.includes(n.type) ? 12000 : 8000);
   };
 
@@ -215,13 +215,15 @@ export default function NotificationCenter({ currentUser, projectId, onOpen, reg
         )}
       </div>
 
-      {/* Pop-up notifications (portalled: the sticky header's backdrop blur would otherwise trap fixed positioning) */}
+      {/* Pop-up notifications (portalled: the sticky header's backdrop blur would otherwise trap fixed positioning).
+          Shown at the top right, just below the header, so they never cover dialog buttons or the assistant button
+          in the bottom corner; the panel itself does not block clicks around the pop-ups. */}
       {createPortal(
-      <div id="notification-toasts" className="fixed bottom-4 right-4 z-[70] flex flex-col gap-2 w-[min(22rem,calc(100vw-2rem))]" aria-live="polite">
+      <div id="notification-toasts" className="fixed top-20 right-4 z-[70] flex flex-col gap-2 w-[min(20rem,calc(100vw-2rem))] pointer-events-none [&>*]:pointer-events-auto" aria-live="polite">
         {toasts.map((n) => {
           const Icon = ICONS[n.type] || Bell;
           return (
-            <div key={n.id} role="status" className={`bg-white rounded-xl border border-slate-200 border-l-4 ${TOAST_BORDER[n.severity]} shadow-xl p-3 flex gap-3 animate-in slide-in-from-right-5 fade-in duration-200`}>
+            <div key={n.id} role="status" className={`bg-white rounded-xl border border-slate-200 border-l-4 ${TOAST_BORDER[n.severity]} shadow-lg p-3 flex gap-3 animate-in slide-in-from-top-2 fade-in duration-200`}>
               <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${TONE[n.severity]}`}>
                 <Icon size={15} />
               </span>
