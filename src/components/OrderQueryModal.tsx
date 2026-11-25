@@ -976,7 +976,7 @@ export default function OrderQueryModal({
                   </>
                 ) : (
                   <>
-                    <Send size={14} /> {needsApproval ? 'Send for Admin Approval' : 'Dispatch RFQ & Create PR'}
+                    <Send size={14} /> {needsApproval ? 'Send for Approval' : 'Dispatch RFQ & Create PR'}
                   </>
                 )}
               </button>
