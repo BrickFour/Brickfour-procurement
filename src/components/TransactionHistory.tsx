@@ -919,17 +919,20 @@ export default function TransactionHistory({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center z-50 p-4"
+            className="fixed inset-0 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center z-50 p-3 sm:p-4"
             id="log-tx-modal"
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-md rounded-2xl p-6 shadow-xl border border-slate-200"
+              role="dialog"
+              aria-labelledby="log-tx-title"
+              className="bg-white w-full max-w-xl max-h-[calc(100dvh-1.5rem)] sm:max-h-[90vh] flex flex-col overflow-hidden rounded-2xl shadow-xl border border-slate-200"
             >
-              <div className="flex items-center justify-between pb-4 border-b border-slate-200">
-                <h3 className="text-base font-bold text-slate-950 flex items-center gap-2">
+              {/* Header stays visible; the fields scroll; the buttons stay at the bottom */}
+              <div className="shrink-0 flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-slate-200">
+                <h3 id="log-tx-title" className="text-base font-bold text-slate-950 flex items-center gap-2 min-w-0">
                   <Plus className="text-slate-800" size={18} /> Record Material Allocation Log
                 </h3>
                 <button
@@ -942,11 +945,12 @@ export default function TransactionHistory({
               </div>
 
               {availableMaterials.length === 0 ? (
-                <div className="py-6 text-center text-slate-500 text-sm">
+                <div className="px-4 sm:px-6 py-8 text-center text-slate-500 text-sm">
                   No materials registered for this project yet. Please add resources to the catalog first!
                 </div>
               ) : (
-                <form onSubmit={handleLogTransaction} className="space-y-4 mt-4">
+                <form onSubmit={handleLogTransaction} className="flex-1 min-h-0 flex flex-col">
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 space-y-4">
                   <div>
                     <label htmlFor="tx-material" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
                       Resource Item *
@@ -966,7 +970,7 @@ export default function TransactionHistory({
                     </select>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
                         Log Action Type *
@@ -1016,8 +1020,8 @@ export default function TransactionHistory({
                         const selMat = materials.find((m) => m.id === formMaterialId);
                         if (formType === 'consumption' && selMat && Number(formQty) > selMat.currentStock) {
                           return (
-                            <p className="text-xs text-red-600 font-extrabold mt-1">
-                              please insert valid values
+                            <p className="text-xs text-rose-700 font-semibold mt-1">
+                              Only {selMat.currentStock} {selMat.unit} in stock
                             </p>
                           );
                         }
@@ -1028,7 +1032,7 @@ export default function TransactionHistory({
 
                   {formType === 'addition' && (
                     <>
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label htmlFor="tx-rate" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
                             Rate / Unit Cost (Rs) *
@@ -1067,7 +1071,7 @@ export default function TransactionHistory({
                             }
                             onChange={(e) => setFormTotalPrice(e.target.value === '' ? '' : Number(e.target.value))}
                             placeholder="Rate × Qty"
-                            className="w-full bg-amber-50 border border-amber-300 text-amber-950 font-bold text-sm rounded-xl px-3.5 py-2.5 focus:outline-hidden"
+                            className="w-full bg-white border border-slate-300 text-slate-950 font-bold text-sm rounded-xl px-3.5 py-2.5 focus:outline-hidden"
                           />
                         </div>
                       </div>
@@ -1091,7 +1095,7 @@ export default function TransactionHistory({
                           <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
                             Invoice Upload / Delivery Proof
                           </label>
-                          <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                          <div className="flex flex-wrap items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 min-w-0">
                             <input
                               id="tx-invoice-file"
                               type="file"
@@ -1112,7 +1116,7 @@ export default function TransactionHistory({
                               Choose Invoice
                             </label>
                             {formInvoiceFileName ? (
-                              <span className="text-xs text-emerald-700 font-bold truncate">
+                              <span className="text-xs text-emerald-700 font-bold truncate min-w-0 max-w-full">
                                 ✓ {formInvoiceFileName}
                               </span>
                             ) : (
@@ -1132,7 +1136,7 @@ export default function TransactionHistory({
                     </>
                   )}
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label htmlFor="tx-operator" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
                         In-Charge Personnel *
@@ -1182,7 +1186,8 @@ export default function TransactionHistory({
                       {logError}
                     </p>
                   )}
-                  <div className="flex gap-3 pt-4 border-t border-slate-200">
+                  </div>
+                  <div className="shrink-0 flex gap-3 px-4 sm:px-6 py-3 border-t border-slate-200 bg-white">
                     <button
                       id="btn-cancel-log-tx"
                       type="button"

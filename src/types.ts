@@ -63,6 +63,10 @@ export interface Material {
   totalPrice?: number; // Total price = quantity * rate
   vendorName?: string; // Vendor / Supplier name
   rateHistory?: RateHistoryPoint[];
+  /** Source of the latest market rate added to the rate history */
+  marketSourceUrl?: string;
+  marketSourceTitle?: string;
+  lastMarketSync?: string; // ISO
   materialCode?: string; // Grouping code e.g. "001", "002"
   materialGroup?: string; // Group name e.g. "Cement & Binding", "Steel"
   billType?: BillType; // 'GST' or 'URD'
@@ -135,7 +139,7 @@ export interface QueryResponse {
   id: string;
   authorUserId: string;
   authorName: string;
-  authorRole: 'admin' | 'site_manager';
+  authorRole: User['role'];
   message: string;
   createdAt: string;
   dispatchedToEmail?: string;

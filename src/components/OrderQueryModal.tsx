@@ -12,13 +12,11 @@ import {
   Send,
   Building2,
   Calendar,
-  AlertTriangle,
   TrendingDown,
   TrendingUp,
   Minus,
   CheckCircle2,
   Users,
-  Mail,
   Clock,
   CreditCard,
   FileText,
@@ -121,7 +119,7 @@ export default function OrderQueryModal({
 
   const activeProject = projects.find((p) => p.id === selectedProjectId);
   const [deliveryAddress, setDeliveryAddress] = useState<string>(activeProject?.location || '');
-  const [specialInstructions, setSpecialInstructions] = useState<string>('Unloading facility and forklift available on site during day shifts.');
+  const [specialInstructions] = useState<string>('Unloading facility and forklift available on site during day shifts.');
 
   // Shown to vendors on the quotation page / RFQ PDF
   const [receivingHours, setReceivingHours] = useState<string>('08:00-19:00, Mon-Sat');
@@ -143,7 +141,7 @@ export default function OrderQueryModal({
   // Online Real-time Market Benchmark fetched via Gemini Google Search
   const [onlineBenchmark, setOnlineBenchmark] = useState<MarketPriceBenchmark | null>(null);
   const [isLoadingOnline, setIsLoadingOnline] = useState<boolean>(false);
-  const [onlineError, setOnlineError] = useState<string | null>(null);
+  const [, setOnlineError] = useState<string | null>(null); // the market rate panel falls back quietly when the live search fails
   const clientBenchmarkCacheRef = React.useRef<Record<string, MarketPriceBenchmark>>({});
 
   const fetchOnlineMarketBenchmark = async (force?: boolean) => {

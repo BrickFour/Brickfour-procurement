@@ -171,7 +171,7 @@ export default function App() {
     vendorEmail: string;
     materialName: string;
     poNumber: string;
-    emailStatus: 'sent' | 'failed' | 'no-email';
+    emailStatus: 'sent' | 'failed' | 'sending' | 'no-email';
   } | null>(null);
 
   // Load from MongoDB (or Local Backup fallback) on mount
@@ -1599,7 +1599,8 @@ export default function App() {
                 }
                 setActiveTab('order-queries');
                 if (isDepartment) return;
-                setOrderFocus({ ...link, nonce: Date.now() });
+                // 'queries' links were handled above, so only order views reach this point
+                setOrderFocus({ view: link.view as 'rfqs' | 'pos' | 'approvals' | 'requests', prId: link.prId, poNumber: link.poNumber, nonce: Date.now() });
                 if (link.view === 'pos') setPoRefreshKey((k) => k + 1);
               }}
             />

@@ -85,7 +85,7 @@ export default function RaiseQueryModal({
       setSubject(`Urgent: Stock deficit for ${matName}`);
       setDescription(`Current inventory for ${matName} at ${selectedProj?.name || 'site'} is insufficient for upcoming work schedule. Immediate supply requisition needed.`);
     } else if (type === 'quality') {
-      setCategory('Damaged Material');
+      setCategory('Quality Issue');
       setUrgency('Medium');
       setSubject(`Quality / Specification query for ${matName}`);
       setDescription(`Received batch of ${matName} needs technical inspection / MTC certificate verification before batch approval.`);
@@ -95,7 +95,7 @@ export default function RaiseQueryModal({
       setSubject(`Delivery lead time enquiry for ${matName}`);
       setDescription(`Site operations await delivery schedule confirmation for ${matName} to avoid contractor labor idling.`);
     } else {
-      setCategory('General Question');
+      setCategory('General Query');
       setUrgency('Low');
       setSubject(`Rate and supplier clarification for ${matName}`);
       setDescription(`Please clarify approved vendor rate contract and delivery terms for upcoming requirements of ${matName}.`);
