@@ -159,12 +159,14 @@ export default function NotificationCenter({ currentUser, projectId, onOpen, reg
           onClick={() => setOpen((o) => !o)}
           aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}
           aria-expanded={open}
-          className="relative h-10 w-10 flex items-center justify-center bg-white hover:bg-[#f5f8fd] border border-slate-200 hover:border-[#c9d6f2] rounded-lg transition-colors cursor-pointer shrink-0"
+          className={`relative h-10 w-10 flex items-center justify-center border rounded-lg transition-colors cursor-pointer shrink-0 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-white/70 ${
+            open ? 'bg-white text-[#23408e] border-white' : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
+          }`}
           title="Notifications"
         >
-          {unread ? <BellRing size={18} className="text-[#23408e]" /> : <Bell size={18} className="text-slate-600" />}
+          {unread ? <BellRing size={18} /> : <Bell size={18} />}
           {unread > 0 && (
-            <span id="notification-badge" className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1 rounded-full bg-rose-600 text-white text-[11px] font-bold flex items-center justify-center ring-2 ring-white">
+            <span id="notification-badge" className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1 rounded-full bg-rose-500 text-white text-[11px] font-bold flex items-center justify-center ring-2 ring-[#23408e]">
               {unread > 99 ? '99+' : unread}
             </span>
           )}

@@ -775,130 +775,164 @@ export default function MaterialCodeSummary({
         {editingMaterial && (
           <div
             id="modal-edit-code-backdrop"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/60 backdrop-blur-xs"
+            onClick={(e) => e.target === e.currentTarget && setEditingMaterial(null)}
+            onKeyDown={(e) => e.key === 'Escape' && setEditingMaterial(null)}
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5"
+              exit={{ opacity: 0, scale: 0.97, y: 10 }}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-code-title"
+              className="bg-white rounded-2xl w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] sm:max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-200"
             >
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-[#23408e] text-white flex items-center justify-center font-bold">
-                    <Hash size={16} />
+              {/* Header (stays visible) */}
+              <div className="shrink-0 flex items-start justify-between gap-3 px-4 sm:px-6 py-4 border-b border-slate-200">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-[#23408e] text-white flex items-center justify-center shrink-0">
+                    <Hash size={17} />
                   </div>
-                  <div>
-                    <h3 className="font-extrabold text-base text-slate-950">Assign Material ERP Code</h3>
-                    <p className="text-xs text-slate-500 font-medium">
-                      Configure grouping code (e.g. 001, 002, 003) for this material
-                    </p>
+                  <div className="min-w-0">
+                    <h3 id="edit-code-title" className="font-bold text-base text-slate-900">Assign Material Code</h3>
+                    <p className="text-xs text-slate-500">Group this material with others under one code (e.g. 001 for all cement types).</p>
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setEditingMaterial(null)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  aria-label="Close"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              {/* Target Material Info */}
-              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Material Selected</div>
-                <div className="text-sm font-black text-slate-950">{editingMaterial.name}</div>
-                <div className="text-xs text-slate-600 font-semibold mt-0.5">
-                  Category: {editingMaterial.category} | Site: {getProjectName(editingMaterial.projectId)}
-                </div>
-              </div>
-
-              {/* Input: Material Code */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
-                  <span>Material Code (e.g. 001, 002, 003)</span>
-                  <span className="text-[11px] text-slate-500 font-normal">All variants share the same code</span>
-                </label>
-                <input
-                  type="text"
-                  value={editTargetCode}
-                  onChange={(e) => setEditTargetCode(e.target.value)}
-                  placeholder="e.g. 001"
-                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-black text-slate-950 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30"
-                />
-              </div>
-
-              {/* Standard Quick Code Suggestions */}
-              <div className="space-y-1.5">
-                <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">
-                  Quick Standard Code Presets:
-                </span>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-40 overflow-y-auto pr-1">
-                  {STANDARD_MATERIAL_GROUPS.map((g) => (
-                    <button
-                      key={g.code}
-                      type="button"
-                      onClick={() => {
-                        setEditTargetCode(g.code);
-                        setEditTargetGroupName(g.name);
-                      }}
-                      className={`p-1.5 text-left text-[11px] font-bold rounded-lg border transition-all cursor-pointer ${
-                        editTargetCode === g.code
-                          ? 'bg-slate-950 text-white border-slate-950 shadow-2xs'
-                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-black text-amber-500">#{g.code}</span>
-                      </div>
-                      <div className="truncate text-[10px] text-slate-600 dark:text-slate-300 font-semibold">{g.name}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Group Name input */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-800 block">
-                  Group / Family Name (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={editTargetGroupName}
-                  onChange={(e) => setEditTargetGroupName(e.target.value)}
-                  placeholder="e.g. Cement & Binding Materials"
-                  className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-[#23408e]/30"
-                />
-              </div>
-
-              {/* Checkbox: Apply to all matching items */}
-              <label className="flex items-start gap-2.5 p-3 bg-amber-50/70 border border-amber-200 rounded-xl cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={applyToAllSameName}
-                  onChange={(e) => setApplyToAllSameName(e.target.checked)}
-                  className="mt-0.5 rounded-md border-amber-400 text-slate-950 focus:ring-slate-950"
-                />
-                <div className="text-xs">
-                  <span className="font-extrabold text-amber-950 block">Apply to all "{editingMaterial.name}" across all project sites</span>
-                  <span className="text-[11px] text-amber-800 font-medium">
-                    Automatically updates all matching records in inventory to use Code [{editTargetCode || '001'}].
+              {/* Body (scrolls) */}
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-6 py-5 space-y-5">
+                {/* Selected material */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <span className="text-sm font-bold text-slate-900 break-words">{editingMaterial.name}</span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white border border-slate-200 text-[11px] font-medium text-slate-600">
+                    {editingMaterial.category}
                   </span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white border border-slate-200 text-[11px] font-medium text-slate-600">
+                    {getProjectName(editingMaterial.projectId)}
+                  </span>
+                  {editingMaterial.materialCode && (
+                    <span className="text-[11px] text-slate-500">Current code #{editingMaterial.materialCode}</span>
+                  )}
                 </div>
-              </label>
 
-              {/* Modal Buttons */}
-              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+                {/* Material code */}
+                <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,200px)_1fr] gap-4">
+                  <div>
+                    <label htmlFor="edit-code-input" className="block text-sm font-semibold text-slate-800 mb-1.5">
+                      Material code *
+                    </label>
+                    <input
+                      id="edit-code-input"
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={editTargetCode}
+                      onChange={(e) => setEditTargetCode(e.target.value.replace(/[^\dA-Za-z-]/g, ''))}
+                      placeholder="e.g. 001"
+                      aria-invalid={!editTargetCode.trim() ? true : undefined}
+                      aria-describedby="edit-code-help"
+                      className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-base font-bold tracking-wide"
+                    />
+                    <p id="edit-code-help" className={`mt-1 text-xs ${editTargetCode.trim() ? 'text-slate-500' : 'text-rose-700'}`}>
+                      {editTargetCode.trim() ? 'All variants share the same code.' : 'Enter a code or choose one below.'}
+                    </p>
+                  </div>
+                  <div>
+                    <label htmlFor="edit-group-input" className="block text-sm font-semibold text-slate-800 mb-1.5">
+                      Group / family name <span className="font-normal text-slate-500">(optional)</span>
+                    </label>
+                    <input
+                      id="edit-group-input"
+                      type="text"
+                      value={editTargetGroupName}
+                      onChange={(e) => setEditTargetGroupName(e.target.value)}
+                      placeholder="e.g. Cement & Binding Materials"
+                      className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm"
+                    />
+                  </div>
+                </div>
+
+                {/* Standard code presets (all visible: no inner scroll box) */}
+                <div>
+                  <div className="flex items-baseline justify-between gap-2 mb-2">
+                    <span id="presets-label" className="text-sm font-semibold text-slate-800">Standard codes</span>
+                    <span className="text-xs text-slate-500">Tap one to fill in the code and group</span>
+                  </div>
+                  <div role="radiogroup" aria-labelledby="presets-label" className="grid grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-3 gap-2">
+                    {STANDARD_MATERIAL_GROUPS.map((g) => {
+                      const selected = editTargetCode === g.code;
+                      return (
+                        <button
+                          key={g.code}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          title={g.name}
+                          onClick={() => {
+                            setEditTargetCode(g.code);
+                            setEditTargetGroupName(g.name);
+                          }}
+                          className={`relative text-left rounded-xl border px-3 py-2.5 transition-colors cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[#23408e]/40 ${
+                            selected
+                              ? 'bg-[#23408e] border-[#23408e] text-white shadow-sm'
+                              : 'bg-white border-slate-200 text-slate-800 hover:border-[#23408e]/50 hover:bg-[#f5f8fd]'
+                          }`}
+                        >
+                          <span className="flex items-center justify-between gap-2">
+                            <span className={`text-sm font-bold ${selected ? 'text-white' : 'text-[#23408e]'}`}>#{g.code}</span>
+                            {selected && <CheckCircle2 size={15} className="text-white shrink-0" aria-hidden="true" />}
+                          </span>
+                          <span className={`block mt-0.5 text-xs leading-snug line-clamp-2 ${selected ? 'text-white/90' : 'text-slate-600'}`}>
+                            {g.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Apply to all matching items */}
+                <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={applyToAllSameName}
+                    onChange={(e) => setApplyToAllSameName(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 shrink-0"
+                  />
+                  <span className="text-sm">
+                    <span className="font-semibold text-slate-900 block">Apply to every "{editingMaterial.name}" on all sites</span>
+                    <span className="text-xs text-slate-600">
+                      All matching records will use code #{editTargetCode.trim() || '—'}
+                      {editTargetGroupName.trim() ? ` (${editTargetGroupName.trim()})` : ''}.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Footer (stays visible) */}
+              <div className="shrink-0 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 px-4 sm:px-6 py-3 border-t border-slate-200 bg-white">
                 <button
                   type="button"
                   onClick={() => setEditingMaterial(null)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
+                  className="w-full sm:w-auto px-4 py-2.5 text-sm font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveCode}
-                  className="px-4 py-2 text-sm font-semibold text-white bg-[#23408e] hover:bg-[#1b3170] rounded-lg cursor-pointer"
+                  disabled={!editTargetCode.trim()}
+                  className="w-full sm:w-auto px-5 py-2.5 text-sm font-semibold text-white bg-[#23408e] hover:bg-[#1b3170] rounded-lg cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Save Code
                 </button>

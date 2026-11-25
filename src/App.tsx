@@ -1567,19 +1567,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors duration-250 font-sans">
-      {/* Dynamic Glassmorphism Banner Header */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 py-3.5 px-4 sm:px-8 shadow-xs">
+      {/* App header: brand blue bar; the logo sits on a white tile so its colours stay true */}
+      <header className="sticky top-0 z-40 bg-[#23408e] border-b border-[#1b3170] py-2.5 sm:py-3 px-4 sm:px-8 shadow-md shadow-[#13294b]/20">
 
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+
           {/* Logo & Headline */}
-          <div className="flex items-center gap-3">
-            <img src={brandLogo} alt="Brickfour logo" className="h-10 sm:h-12 w-auto object-contain shrink-0" />
-            <div>
-              <h1 className="text-xl font-logo uppercase tracking-tight">
-                <span className="text-indigo-900">PRAVAH</span>
-              </h1>
-              <p className="text-xs text-slate-500 font-semibold">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="bg-white rounded-lg px-2 py-1 shadow-sm shrink-0">
+              <img src={brandLogo} alt="Brickfour logo" className="h-8 sm:h-10 w-auto object-contain" />
+            </div>
+            <div className="min-w-0 sm:border-l sm:border-white/20 sm:pl-3">
+              <h1 className="text-lg sm:text-xl font-logo uppercase tracking-tight text-white leading-tight">PRAVAH</h1>
+              <p className="hidden sm:block text-xs text-blue-100/80 font-medium truncate">
                 Construction Material Consumption & Supply Ledger Dashboard
               </p>
             </div>
@@ -1607,16 +1607,16 @@ export default function App() {
             {/* Signed-in user */}
             <div
               id="header-user"
-              className="h-10 pl-1.5 pr-1.5 sm:pr-3 flex items-center gap-2.5 bg-white border border-slate-200 rounded-lg shrink-0"
+              className="h-10 pl-1.5 pr-1.5 sm:pr-3 flex items-center gap-2.5 bg-white/10 border border-white/20 rounded-lg shrink-0"
             >
-              <div className="w-7 h-7 rounded-md bg-[#23408e] text-white text-xs font-bold flex items-center justify-center shrink-0" aria-hidden="true">
+              <div className="w-7 h-7 rounded-md bg-white text-[#23408e] text-xs font-bold flex items-center justify-center shrink-0" aria-hidden="true">
                 {(currentUser.name || (currentUser.role === 'admin' ? 'A' : 'S')).trim().charAt(0).toUpperCase()}
               </div>
               <div className="hidden sm:flex items-center gap-2 leading-tight">
-                <span className="text-sm font-semibold text-slate-900">
+                <span className="text-sm font-semibold text-white max-w-[180px] truncate">
                   {currentUser.name || (currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? 'Department' : 'Site Manager')}
                 </span>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold bg-white/15 text-white border-white/25">
                   {currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'department' ? `${currentUser.department || 'Department'} Dept` : 'Site Manager'}
                 </span>
               </div>
@@ -1627,7 +1627,7 @@ export default function App() {
               onClick={() => setIsLoggedIn(false)}
               aria-label="Log out"
               title="Log out"
-              className="w-10 h-10 flex items-center justify-center bg-white hover:bg-rose-50 text-rose-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 rounded-lg transition-colors cursor-pointer shrink-0"
+              className="w-10 h-10 flex items-center justify-center bg-white/10 hover:bg-rose-600 text-white border border-white/20 hover:border-rose-600 rounded-lg transition-colors cursor-pointer shrink-0 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-white/70"
             >
               <LogOut size={18} />
             </button>

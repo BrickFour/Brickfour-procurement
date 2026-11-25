@@ -14,8 +14,33 @@ import {
   Camera,
   ExternalLink,
   X,
+  AlertOctagon,
+  AlertTriangle,
+  Minus,
+  ArrowDown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+/*
+ * Priority and status use two separate colour families so they are never confused:
+ *  - Priority (urgency): a severity scale, red -> orange -> amber -> blue, each with its own icon,
+ *    plus a matching stripe on the left edge of the ticket so priority can be scanned down the list.
+ *  - Status: a dot (or a tick when resolved) with blue = Open, violet = In Progress, green = Resolved.
+ * Colour is never the only cue: every badge also has a text label and an icon / dot.
+ */
+type Urgency = SiteQuery['urgency'];
+const URGENCY_STYLE: Record<string, { label: string; hint: string; badge: string; accent: string; dot: string; icon: typeof AlertOctagon; rank: number }> = {
+  Urgent: { label: 'Urgent', hint: 'Work stopped', badge: 'bg-rose-600 text-white border-rose-600', accent: 'border-l-rose-600', dot: 'bg-rose-600', icon: AlertOctagon, rank: 0 },
+  High: { label: 'High priority', hint: 'Work may stop soon', badge: 'bg-orange-50 text-orange-800 border-orange-300', accent: 'border-l-orange-500', dot: 'bg-orange-500', icon: AlertTriangle, rank: 1 },
+  Medium: { label: 'Medium priority', hint: 'Normal attention', badge: 'bg-amber-50 text-amber-800 border-amber-300', accent: 'border-l-amber-400', dot: 'bg-amber-400', icon: Minus, rank: 2 },
+  Low: { label: 'Low priority', hint: 'For information', badge: 'bg-sky-50 text-sky-800 border-sky-200', accent: 'border-l-sky-400', dot: 'bg-sky-400', icon: ArrowDown, rank: 3 },
+};
+const urgencyStyle = (u: Urgency | string) => URGENCY_STYLE[u] || URGENCY_STYLE.Low;
+const STATUS_STYLE: Record<SiteQuery['status'], { badge: string; dot: string }> = {
+  Open: { badge: 'bg-blue-50 text-blue-800 border-blue-200', dot: 'bg-blue-600' },
+  'In Progress': { badge: 'bg-violet-50 text-violet-800 border-violet-200', dot: 'bg-violet-500' },
+  Resolved: { badge: 'bg-emerald-50 text-emerald-800 border-emerald-200', dot: 'bg-emerald-500' },
+};
 
 interface QueryCenterProps {
   queries: SiteQuery[];
@@ -69,7 +94,19 @@ export default function QueryCenter({
     const matchesUrgency = urgencyFilter === 'All' || q.urgency === urgencyFilter;
 
     return matchesSearch && matchesStatus && matchesUrgency;
-  });
+  })
+    // Most pressing first: unresolved before resolved, then by priority (Urgent -> Low); otherwise newest order is kept
+    .map((q, i) => ({ q, i }))
+    .sort(
+      (a, b) =>
+        Number(a.q.status === 'Resolved') - Number(b.q.status === 'Resolved') ||
+        urgencyStyle(a.q.urgency).rank - urgencyStyle(b.q.urgency).rank ||
+        a.i - b.i
+    )
+    .map(({ q }) => q);
+
+  // Unresolved tickets per priority (for the priority filter)
+  const unresolvedByUrgency = (u: string) => queries.filter((q) => q.urgency === u && q.status !== 'Resolved').length;
 
   const openCount = queries.filter((q) => q.status === 'Open').length;
   const inProgressCount = queries.filter((q) => q.status === 'In Progress').length;
@@ -116,8 +153,8 @@ export default function QueryCenter({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Tickets', value: queries.length, hint: 'All site queries', cls: 'text-slate-900' },
-          { label: 'Pending Open', value: openCount, hint: 'Awaiting a response', cls: openCount ? 'text-amber-700' : 'text-slate-900' },
-          { label: 'In Progress', value: inProgressCount, hint: 'Being worked on', cls: 'text-[#23408e]' },
+          { label: 'Pending Open', value: openCount, hint: 'Awaiting a response', cls: openCount ? 'text-blue-700' : 'text-slate-900' },
+          { label: 'In Progress', value: inProgressCount, hint: 'Being worked on', cls: 'text-violet-700' },
           { label: 'Resolved', value: resolvedCount, hint: 'Closed tickets', cls: 'text-emerald-700' },
         ].map((k) => (
           <div key={k.label} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -149,8 +186,8 @@ export default function QueryCenter({
         })}
       </div>
 
-      {/* Search & urgency */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+      {/* Search & priority */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <Search size={16} className="text-slate-400 shrink-0" />
           <input
@@ -163,19 +200,32 @@ export default function QueryCenter({
             className="flex-1 min-w-0 text-sm py-1 focus:outline-hidden"
           />
         </div>
-        <select
-          id="filter-urgency-select"
-          value={urgencyFilter}
-          onChange={(e) => setUrgencyFilter(e.target.value)}
-          aria-label="Filter by urgency"
-          className="bg-white border border-slate-300 text-slate-800 text-sm rounded-lg px-3 py-1.5 focus:outline-hidden focus:border-[#23408e] focus:ring-1 focus:ring-[#23408e]/20 cursor-pointer"
-        >
-          <option value="All">All Urgencies</option>
-          <option value="Urgent">Urgent</option>
-          <option value="High">High</option>
-          <option value="Medium">Medium</option>
-          <option value="Low">Low</option>
-        </select>
+        {/* Priority filter: colour-coded chips that double as the priority legend */}
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by priority">
+          <span className="text-xs font-semibold text-slate-500 mr-1">Priority</span>
+          {(['All', 'Urgent', 'High', 'Medium', 'Low'] as const).map((u) => {
+            const active = urgencyFilter === u;
+            const st = u === 'All' ? null : urgencyStyle(u);
+            const n = u === 'All' ? null : unresolvedByUrgency(u);
+            return (
+              <button
+                key={u}
+                id={`filter-urgency-${u.toLowerCase()}`}
+                type="button"
+                aria-pressed={active}
+                title={st ? `${st.label}: ${st.hint}` : 'Show all priorities'}
+                onClick={() => setUrgencyFilter(u)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold cursor-pointer transition-colors ${
+                  active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+                }`}
+              >
+                {st && <span className={`w-2 h-2 rounded-full ${st.dot}`} aria-hidden="true" />}
+                {u === 'All' ? 'All' : u}
+                {n ? <span className={active ? 'text-white/80' : 'text-slate-400'}>{n}</span> : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Queries Feed */}
@@ -190,27 +240,16 @@ export default function QueryCenter({
           filteredQueries.map((query) => {
             const isExpanded = expandedQueryId === query.id;
 
-            const urgencyBadge =
-              query.urgency === 'Urgent'
-                ? 'bg-rose-50 text-rose-700 border-rose-200'
-                : query.urgency === 'High'
-                ? 'bg-amber-50 text-amber-800 border-amber-200'
-                : query.urgency === 'Medium'
-                ? 'bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]'
-                : 'bg-slate-100 text-slate-700 border-slate-200';
-
-            const statusBadge =
-              query.status === 'Open'
-                ? 'bg-amber-50 text-amber-800 border-amber-200'
-                : query.status === 'In Progress'
-                ? 'bg-[#eaf0fb] text-[#23408e] border-[#c9d6f2]'
-                : 'bg-emerald-50 text-emerald-800 border-emerald-200';
+            const urg = urgencyStyle(query.urgency);
+            const UrgIcon = urg.icon;
+            const stat = STATUS_STYLE[query.status] || STATUS_STYLE.Open;
+            const resolved = query.status === 'Resolved';
 
             return (
               <div
                 key={query.id}
                 id={`query-card-${query.id}`}
-                className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden transition-colors hover:border-[#c9d6f2]"
+                className={`bg-white rounded-xl border border-slate-200 border-l-4 ${resolved ? 'border-l-emerald-400' : urg.accent} shadow-sm overflow-hidden transition-colors hover:border-[#c9d6f2]`}
               >
                 {/* Header Strip */}
                 <div
@@ -219,11 +258,17 @@ export default function QueryCenter({
                 >
                   <div className="flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold ${statusBadge}`}>
-                        {query.status}
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-semibold ${urg.badge} ${resolved ? 'opacity-70' : ''}`} title={urg.hint}>
+                        <UrgIcon size={12} aria-hidden="true" />
+                        {urg.label}
                       </span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-semibold ${urgencyBadge}`}>
-                        {query.urgency} Urgency
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-semibold ${stat.badge}`}>
+                        {resolved ? (
+                          <CheckCircle2 size={12} aria-hidden="true" />
+                        ) : (
+                          <span className={`w-1.5 h-1.5 rounded-full ${stat.dot}`} aria-hidden="true" />
+                        )}
+                        {query.status}
                       </span>
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-semibold bg-slate-100 text-slate-700 border-slate-200">
                         <Building2 size={11} /> {query.projectName}
@@ -237,7 +282,7 @@ export default function QueryCenter({
 
                     <h3 className="text-base font-semibold text-slate-900 pt-1">{query.subject}</h3>
 
-                    <div className="flex items-center gap-3 text-xs text-slate-500 font-medium">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 font-medium">
                       <span>Raised by: <strong className="text-slate-800 font-bold">{query.raisedByName}</strong></span>
                       <span>•</span>
                       <span className="flex items-center gap-1"><Clock size={12} /> {query.createdAt}</span>
